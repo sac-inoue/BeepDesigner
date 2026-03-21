@@ -59,6 +59,7 @@ function autoCorrelate(buf: Float32Array, sampleRate: number): number {
   return sampleRate / T0;
 }
 
+
 interface PianoRollProps {
   beep: Beep;
   onUpdate: (updatedBeep: Beep) => void;
@@ -74,8 +75,8 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
   const [currentTime, setCurrentTime] = useState(0);
   const animationRef = useRef<number | null>(null);
   const activeOscillatorsRef = useRef<OscillatorNode[]>([]);
-
   const containerRef = useRef<HTMLDivElement>(null);
+  const wavInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [dragMode, setDragMode] = useState<'add' | 'remove' | null>(null);
 
@@ -358,13 +359,52 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
       micIntervalRef.current = null;
     }
     if (stream) stream.getTracks().forEach(t => t.stop());
-    processRecordedNotes();
+    processRecordedNotes(recordedFrequenciesRef.current, micSpeed);
     setIsRecordingMic(false);
     setMicProgress(0);
   };
 
-  const processRecordedNotes = () => {
-    const allRawFreqs = recordedFrequenciesRef.current;
+  const handleWavImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    // reset file input
+    e.target.value = "";
+    
+    try {
+        const ctx = getGlobalAudioCtx();
+        const arrayBuffer = await file.arrayBuffer();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+        
+        // Use mono (channel 0)
+        const channelData = audioBuffer.getChannelData(0);
+        const sampleRate = audioBuffer.sampleRate;
+        
+        // Analyze at GRID_MS steps
+        const stepSize = Math.floor(sampleRate * (GRID_MS / 1000));
+        const windowSize = 2048; 
+        
+        const freqs: number[] = [];
+        for (let i = 0; i < channelData.length; i += stepSize) {
+            // Get slice for autoCorrelate
+            const end = Math.min(i + windowSize, channelData.length);
+            const slice = channelData.slice(i, end);
+            
+            // If slice is too small for autoCorrelate, pad or skip? 
+            // autoCorrelate handles sizes
+            const freq = autoCorrelate(slice, sampleRate);
+            freqs.push(freq > 0 ? freq : 0);
+        }
+        
+        // Process with speed 1 (1x)
+        processRecordedNotes(freqs, 1);
+    } catch (err) {
+        console.error("WAV Import Failed", err);
+        alert("Failed to read audio file. Please ensure it is a valid WAV.");
+    }
+  };
+
+  const processRecordedNotes = (allRawFreqs: number[], speed: number) => {
     if (allRawFreqs.length === 0) return;
 
     // Head-Perfecting: Find first note and skip silence
@@ -372,7 +412,7 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     if (firstSoundIdx === -1) return; // No sound found
 
     // Take current duration worth of frequencies starting from first sound
-    const rawFreqs = allRawFreqs.slice(firstSoundIdx, firstSoundIdx + (totalCells * micSpeed));
+    const rawFreqs = allRawFreqs.slice(firstSoundIdx, firstSoundIdx + (totalCells * speed));
 
     // Downsample (Average/Pick in window of micSpeed)
     const processedFreqs: number[] = [];
@@ -477,7 +517,22 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
                 className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-bold transition-all ${isRecordingMic ? 'bg-red-500 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-500'} text-white text-xs disabled:opacity-50`}
             >
                 <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" /></svg>
-                <span>{isRecordingMic ? 'STOP MIC' : (micCountdown !== null ? `REC IN ${micCountdown}...` : 'MIC RECORD')}</span>
+                <span>{isRecordingMic ? 'STOP' : (micCountdown !== null ? `IN ${micCountdown}...` : 'MIC REC')}</span>
+            </button>
+            <input 
+              type="file" 
+              accept=".wav,.mp3" 
+              className="hidden" 
+              ref={wavInputRef} 
+              onChange={handleWavImport}
+            />
+            <button 
+                onClick={() => wavInputRef.current?.click()}
+                disabled={isRecordingMic || micCountdown !== null}
+                className="flex items-center space-x-2 px-4 py-2 rounded-lg font-bold bg-indigo-900/50 hover:bg-indigo-800 transition-all text-white text-xs disabled:opacity-50 border border-indigo-500/30"
+            >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0l-4 4m4-4v12" /></svg>
+                <span>WAV IMP</span>
             </button>
           </div>
         </div>
