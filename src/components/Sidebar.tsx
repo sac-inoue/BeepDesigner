@@ -31,16 +31,23 @@ const Sidebar: React.FC<{
               : 'hover:bg-gray-800/50 border-transparent text-gray-400'
           }`}
         >
-          <input 
-            type="text"
-            value={beep.name}
-            onChange={(e) => onUpdateName(beep.id, e.target.value)}
-            className={`bg-transparent border-0 outline-none text-xs font-mono w-full mr-2 transition-all ${
-                currentBeepId === beep.id ? 'text-blue-400 font-bold' : 'text-gray-400 pointer-events-none'
-            }`}
-            onClick={(e) => e.stopPropagation()}
-            placeholder="Name..."
-          />
+          <div className="flex flex-col flex-1 min-w-0 mr-2">
+            <input 
+              type="text"
+              value={beep.name}
+              onChange={(e) => onUpdateName(beep.id, e.target.value)}
+              className={`bg-transparent border-0 outline-none text-xs font-mono w-full transition-all ${
+                  currentBeepId === beep.id ? 'text-blue-400 font-bold' : 'text-gray-400 pointer-events-none'
+              }`}
+              onClick={(e) => e.stopPropagation()}
+              placeholder="Name..."
+            />
+            {beep.lastUpdatedAt && (
+              <span className="text-[9px] text-gray-600 font-mono opacity-80 mt-0.5 whitespace-nowrap">
+                {new Date(beep.lastUpdatedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+            )}
+          </div>
           <div className="flex items-center space-x-1 shrink-0">
             <button 
               onClick={(e) => { e.stopPropagation(); onDuplicateBeep(beep.id); }}

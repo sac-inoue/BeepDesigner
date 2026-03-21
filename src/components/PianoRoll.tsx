@@ -427,7 +427,14 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
         )}
 
         <div className="flex flex-col space-y-1">
-          <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest pl-1">Sound Name</span>
+          <div className="flex items-center justify-between px-1">
+            <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest">Sound Name</span>
+            {beep.lastUpdatedAt && (
+              <span className="text-[9px] text-gray-700 font-mono tracking-tight whitespace-nowrap ml-2">
+                {new Date(beep.lastUpdatedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+            )}
+          </div>
           <input 
             type="text"
             value={beep.name}

@@ -9,6 +9,7 @@ export interface Beep {
   name: string;
   durationSec: number;
   notes: Note[];
+  lastUpdatedAt?: number; // timestamp
 }
 
 export interface Project {

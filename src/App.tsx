@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { Project, Beep } from './types';
+import { get, set } from 'idb-keyval';
 import PianoRoll from './components/PianoRoll';
 import CodeReview from './components/CodeReview';
 import Sidebar from './components/Sidebar';
@@ -7,29 +8,64 @@ import Header from './components/Header';
 
 const STORAGE_KEY = 'ESP32_BEEP_PROJECT';
 
-const App: React.FC = () => {
-  const [project, setProject] = useState<Project>(() => {
-    const saved = localStorage.getItem('beep_project');
-    return saved ? JSON.parse(saved) : { projectName: 'My Beep Project', version: '1.0', beeps: [{ id: 'default', name: 'startup_sound', durationSec: 1, notes: [] }] };
-  });
+const DEFAULT_PROJECT: Project = { 
+  projectName: 'My Beep Project', 
+  version: '1.0', 
+  beeps: [{ id: 'default', name: 'startup_sound', durationSec: 1, notes: [], lastUpdatedAt: Date.now() }] 
+};
 
-  const [currentBeepId, setCurrentBeepId] = useState<string>(project.beeps[0].id);
-  const [workingBeep, setWorkingBeep] = useState<Beep | null>(() => JSON.parse(JSON.stringify(project.beeps[0])));
+const App: React.FC = () => {
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [project, setProject] = useState<Project>(DEFAULT_PROJECT);
+  const [currentBeepId, setCurrentBeepId] = useState<string>('');
+  const [workingBeep, setWorkingBeep] = useState<Beep | null>(null);
   
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isBottomPaneOpen, setIsBottomPaneOpen] = useState(false);
 
-  const saveToLocalStorage = useCallback((p: Project) => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
+  useEffect(() => {
+    // Migrate from LocalStorage
+    const legacy1 = localStorage.getItem('ESP32_BEEP_PROJECT');
+    const legacy2 = localStorage.getItem('beep_project');
+    const legacyString = legacy1 || legacy2;
+    
+    if (legacyString) {
+      try {
+        const parsed = JSON.parse(legacyString);
+        if (parsed && parsed.beeps && parsed.beeps.length > 0) {
+          setProject(parsed);
+          setCurrentBeepId(parsed.beeps[0].id);
+          setWorkingBeep(JSON.parse(JSON.stringify(parsed.beeps[0])));
+          setIsLoaded(true);
+          localStorage.removeItem('ESP32_BEEP_PROJECT');
+          localStorage.removeItem('beep_project');
+          return;
+        }
+      } catch (e) {
+        // Ignored
+      }
+    }
+
+    // Load from IndexedDB
+    get<Project>(STORAGE_KEY).then(saved => {
+      if (saved && saved.beeps && saved.beeps.length > 0) {
+        setProject(saved);
+        setCurrentBeepId(saved.beeps[0].id);
+        setWorkingBeep(JSON.parse(JSON.stringify(saved.beeps[0])));
+      } else {
+        setProject(DEFAULT_PROJECT);
+        setCurrentBeepId(DEFAULT_PROJECT.beeps[0].id);
+        setWorkingBeep(JSON.parse(JSON.stringify(DEFAULT_PROJECT.beeps[0])));
+      }
+      setIsLoaded(true);
+    });
   }, []);
 
   useEffect(() => {
-    saveToLocalStorage(project);
-    if (!currentBeepId && project.beeps.length > 0) {
-      setCurrentBeepId(project.beeps[0].id);
-      setWorkingBeep(JSON.parse(JSON.stringify(project.beeps[0])));
+    if (isLoaded) {
+      set(STORAGE_KEY, project).catch(err => console.error("IDB Save Failed", err));
     }
-  }, [project, currentBeepId, saveToLocalStorage]);
+  }, [project, isLoaded]);
 
   const currentSavedBeep = project.beeps.find(b => b.id === currentBeepId);
   const isDirty = !!workingBeep && !!currentSavedBeep && JSON.stringify(workingBeep) !== JSON.stringify(currentSavedBeep);
@@ -40,9 +76,11 @@ const App: React.FC = () => {
 
   const handleSave = () => {
     if (!workingBeep) return;
+    const saveBeep = { ...workingBeep, lastUpdatedAt: Date.now() };
+    setWorkingBeep(saveBeep);
     setProject(prev => ({
       ...prev,
-      beeps: prev.beeps.map(b => b.id === workingBeep.id ? workingBeep : b)
+      beeps: prev.beeps.map(b => b.id === workingBeep.id ? saveBeep : b)
     }));
   };
 
@@ -59,7 +97,8 @@ const App: React.FC = () => {
     
     if (isDirty) {
       if (window.confirm("保存されていない変更があります。保存してから切り替えますか？\n\n[OK] キャンセルせず保存して切り替え\n[キャンセル] 変更を破棄して切り替え")) {
-        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? workingBeep! : b) };
+        const savedWorking = { ...workingBeep!, lastUpdatedAt: Date.now() };
+        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? savedWorking : b) };
         setProject(nextProject);
       }
     }
@@ -74,7 +113,8 @@ const App: React.FC = () => {
     let nextProject = project;
     if (isDirty) {
       if (window.confirm("保存されていない変更があります。保存しますか？\n\n[OK] 保存して新しいパターン作成\n[キャンセル] 変更を破棄して新しいパターン作成")) {
-        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? workingBeep! : b) };
+        const savedWorking = { ...workingBeep!, lastUpdatedAt: Date.now() };
+        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? savedWorking : b) };
       }
     }
 
@@ -82,7 +122,8 @@ const App: React.FC = () => {
       id: crypto.randomUUID(),
       name: `new_sound_${nextProject.beeps.length + 1}`,
       durationSec: 1,
-      notes: []
+      notes: [],
+      lastUpdatedAt: Date.now()
     };
     nextProject = { ...nextProject, beeps: [...nextProject.beeps, newBeep] };
     setProject(nextProject);
@@ -97,14 +138,16 @@ const App: React.FC = () => {
     let nextProject = project;
     if (isDirty) {
       if (window.confirm("保存されていない変更があります。保存してから複製しますか？\n\n[OK] 保存して複製\n[キャンセル] 変更を破棄して複製")) {
-        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? workingBeep! : b) };
+        const savedWorking = { ...workingBeep!, lastUpdatedAt: Date.now() };
+        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? savedWorking : b) };
       }
     }
 
     const copy: Beep = {
       ...JSON.parse(JSON.stringify(original)), 
       id: crypto.randomUUID(),
-      name: `${original.name}_copy`
+      name: `${original.name}_copy`,
+      lastUpdatedAt: Date.now()
     };
     nextProject = { ...nextProject, beeps: [...nextProject.beeps, copy] };
     setProject(nextProject);
@@ -136,10 +179,10 @@ const App: React.FC = () => {
     const safeName = name.replace(/[^a-zA-Z0-9_]/g, '');
     setProject(prev => ({
       ...prev,
-      beeps: prev.beeps.map(b => b.id === id ? { ...b, name: safeName } : b)
+      beeps: prev.beeps.map(b => b.id === id ? { ...b, name: safeName, lastUpdatedAt: Date.now() } : b)
     }));
     if (id === currentBeepId && workingBeep) {
-      setWorkingBeep(prev => prev ? { ...prev, name: safeName } : prev);
+      setWorkingBeep(prev => prev ? { ...prev, name: safeName, lastUpdatedAt: Date.now() } : prev);
     }
   };
 
@@ -185,6 +228,15 @@ const App: React.FC = () => {
     };
     reader.readAsText(file);
   };
+
+  if (!isLoaded) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen w-full bg-gray-950 text-gray-500 font-bold uppercase tracking-widest space-y-4">
+         <div className="w-8 h-8 rounded-full border-2 border-t-blue-500 border-gray-800 animate-spin" />
+         <div>Loading Workspace...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-gray-950 text-gray-100">
