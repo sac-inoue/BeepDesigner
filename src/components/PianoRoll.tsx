@@ -63,9 +63,12 @@ interface PianoRollProps {
   beep: Beep;
   onUpdate: (updatedBeep: Beep) => void;
   onToggleSidebar?: () => void;
+  onSave?: () => void;
+  onDiscard?: () => void;
+  isDirty?: boolean;
 }
 
-const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }) => {
+const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, onSave, onDiscard, isDirty }) => {
   const scale = useMemo(() => getScale(), []);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -474,30 +477,59 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
 
         <div className="h-10 w-px bg-gray-800 mx-2" />
 
-        <button 
-          onClick={startPlayback}
-          className={`flex items-center space-x-2 px-6 py-2 rounded-lg font-bold transition-all ${isPlaying ? 'bg-red-500 shadow-red-500/20' : 'bg-green-600 shadow-green-600/20'} text-white text-sm`}
-        >
-          {isPlaying ? 'STOP' : 'PLAY'}
-        </button>
-
-        <div className="flex items-center space-x-3 bg-gray-800/40 p-1 rounded-lg border border-gray-800">
-           <span className="text-[10px] font-bold text-gray-500 px-3 uppercase">Duration</span>
-           <select 
-            value={beep.durationSec}
-            onChange={e => onUpdate({...beep, durationSec: Number(e.target.value)})}
-            className="bg-gray-950 text-sm border-0 outline-none rounded px-2 py-1 text-blue-400 font-bold"
-           >
-             {[1,2,3,4,5].map(v => <option key={v} value={v}>{v}s</option>)}
-           </select>
+        <div className="flex flex-col space-y-1">
+          <span className="text-[10px] font-bold text-transparent select-none uppercase tracking-widest pl-1">Actions</span>
+          <div className="flex space-x-2">
+            <button 
+              onClick={startPlayback}
+              className={`flex items-center justify-center space-x-2 px-6 py-2 rounded-lg font-bold transition-all ${isPlaying ? 'bg-red-500 shadow-red-500/20' : 'bg-green-600 shadow-green-600/20'} text-white text-xs whitespace-nowrap`}
+            >
+              <span>{isPlaying ? 'STOP' : 'PLAY PATTERN'}</span>
+            </button>
+            <button 
+              onClick={onSave}
+              disabled={!isDirty}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-bold transition-all whitespace-nowrap text-xs ${isDirty ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-gray-800 text-gray-600 cursor-not-allowed hidden lg:flex'}`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>
+              <span className="hidden lg:inline">{isDirty ? 'SAVE CHANGES' : 'SAVED'}</span>
+              <span className="lg:hidden">{isDirty ? 'SAVE' : 'SAVED'}</span>
+            </button>
+            {isDirty && (
+              <button 
+                onClick={onDiscard}
+                title="Discard Changes"
+                className="flex items-center justify-center px-3 py-2 rounded-lg font-bold transition-all bg-red-950/80 hover:bg-red-900 border border-red-900/50 text-red-200 text-xs whitespace-nowrap"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+              </button>
+            )}
+          </div>
         </div>
 
-        <button 
-          onClick={() => onUpdate({...beep, notes: []})}
-          className="text-[10px] text-gray-500 hover:text-red-400 transition-colors uppercase font-bold tracking-widest border border-gray-800 px-4 py-2 rounded-lg"
-        >
-          Clear
-        </button>
+        <div className="flex flex-col space-y-1 ml-auto">
+          <span className="text-[10px] font-bold text-transparent select-none uppercase tracking-widest pl-1">Config</span>
+          <div className="flex items-center space-x-3 bg-gray-800/40 p-1 rounded-lg border border-gray-800">
+             <span className="text-[10px] font-bold text-gray-500 px-3 uppercase">Duration</span>
+             <select 
+              value={beep.durationSec}
+              onChange={e => onUpdate({...beep, durationSec: Number(e.target.value)})}
+              className="bg-gray-950 text-sm border-0 outline-none rounded px-2 py-1 text-blue-400 font-bold"
+             >
+               {[1,2,3,4,5].map(v => <option key={v} value={v}>{v}s</option>)}
+             </select>
+          </div>
+        </div>
+
+        <div className="flex flex-col space-y-1">
+          <span className="text-[10px] font-bold text-transparent select-none uppercase tracking-widest pl-1">Erase</span>
+          <button 
+            onClick={() => onUpdate({...beep, notes: []})}
+            className="text-[10px] text-gray-500 hover:text-red-400 transition-colors uppercase font-bold tracking-widest border border-gray-800 px-4 py-2 rounded-lg h-[32px] flex items-center justify-center"
+          >
+            Clear
+          </button>
+        </div>
       </div>
 
       <div className="relative border border-gray-800 rounded-xl overflow-hidden shadow-2xl bg-gray-950 flex-1 flex flex-col">

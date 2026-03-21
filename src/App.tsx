@@ -14,6 +14,8 @@ const App: React.FC = () => {
   });
 
   const [currentBeepId, setCurrentBeepId] = useState<string>(project.beeps[0].id);
+  const [workingBeep, setWorkingBeep] = useState<Beep | null>(() => JSON.parse(JSON.stringify(project.beeps[0])));
+  
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isBottomPaneOpen, setIsBottomPaneOpen] = useState(false);
 
@@ -25,63 +27,120 @@ const App: React.FC = () => {
     saveToLocalStorage(project);
     if (!currentBeepId && project.beeps.length > 0) {
       setCurrentBeepId(project.beeps[0].id);
+      setWorkingBeep(JSON.parse(JSON.stringify(project.beeps[0])));
     }
   }, [project, currentBeepId, saveToLocalStorage]);
 
-  const currentBeep = project.beeps.find(b => b.id === currentBeepId);
+  const currentSavedBeep = project.beeps.find(b => b.id === currentBeepId);
+  const isDirty = !!workingBeep && !!currentSavedBeep && JSON.stringify(workingBeep) !== JSON.stringify(currentSavedBeep);
 
   const updateBeep = (updatedBeep: Beep) => {
+    setWorkingBeep(updatedBeep);
+  };
+
+  const handleSave = () => {
+    if (!workingBeep) return;
     setProject(prev => ({
       ...prev,
-      beeps: prev.beeps.map(b => b.id === updatedBeep.id ? updatedBeep : b)
+      beeps: prev.beeps.map(b => b.id === workingBeep.id ? workingBeep : b)
     }));
   };
 
+  const handleDiscard = () => {
+    if (currentSavedBeep) {
+      setWorkingBeep(JSON.parse(JSON.stringify(currentSavedBeep)));
+    }
+  };
+
+
+  const handleSelectBeep = (id: string) => {
+    if (id === currentBeepId) return;
+    let nextProject = project;
+    
+    if (isDirty) {
+      if (window.confirm("保存されていない変更があります。保存してから切り替えますか？\n\n[OK] キャンセルせず保存して切り替え\n[キャンセル] 変更を破棄して切り替え")) {
+        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? workingBeep! : b) };
+        setProject(nextProject);
+      }
+    }
+    
+    setCurrentBeepId(id);
+    const nextSaved = nextProject.beeps.find(b => b.id === id);
+    if (nextSaved) setWorkingBeep(JSON.parse(JSON.stringify(nextSaved)));
+    setIsSidebarOpen(false);
+  };
+
   const addBeep = () => {
+    let nextProject = project;
+    if (isDirty) {
+      if (window.confirm("保存されていない変更があります。保存しますか？\n\n[OK] 保存して新しいパターン作成\n[キャンセル] 変更を破棄して新しいパターン作成")) {
+        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? workingBeep! : b) };
+      }
+    }
+
     const newBeep: Beep = {
       id: crypto.randomUUID(),
-      name: `new_sound_${project.beeps.length + 1}`,
+      name: `new_sound_${nextProject.beeps.length + 1}`,
       durationSec: 1,
       notes: []
     };
-    setProject(prev => ({
-      ...prev,
-      beeps: [...prev.beeps, newBeep]
-    }));
+    nextProject = { ...nextProject, beeps: [...nextProject.beeps, newBeep] };
+    setProject(nextProject);
     setCurrentBeepId(newBeep.id);
+    setWorkingBeep(JSON.parse(JSON.stringify(newBeep)));
   };
 
   const duplicateBeep = (id: string) => {
     const original = project.beeps.find(b => b.id === id);
     if (!original) return;
+    
+    let nextProject = project;
+    if (isDirty) {
+      if (window.confirm("保存されていない変更があります。保存してから複製しますか？\n\n[OK] 保存して複製\n[キャンセル] 変更を破棄して複製")) {
+        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? workingBeep! : b) };
+      }
+    }
+
     const copy: Beep = {
       ...JSON.parse(JSON.stringify(original)), 
       id: crypto.randomUUID(),
       name: `${original.name}_copy`
     };
-    setProject(prev => ({
-      ...prev,
-      beeps: [...prev.beeps, copy]
-    }));
+    nextProject = { ...nextProject, beeps: [...nextProject.beeps, copy] };
+    setProject(nextProject);
     setCurrentBeepId(copy.id);
+    setWorkingBeep(JSON.parse(JSON.stringify(copy)));
   };
 
   const deleteBeep = (id: string) => {
     if (project.beeps.length <= 1) return;
+    const isDeletingCurrent = id === currentBeepId;
+
+    if (isDeletingCurrent && isDirty) {
+      if (!window.confirm("未保存の変更があります。本当にこのパターンを削除しますか？")) return;
+    }
+
+    const nextBeeps = project.beeps.filter(b => b.id !== id);
     setProject(prev => ({
       ...prev,
-      beeps: prev.beeps.filter(b => b.id !== id)
+      beeps: nextBeeps
     }));
-    if (currentBeepId === id) {
-      setCurrentBeepId(project.beeps[0].id);
+    
+    if (isDeletingCurrent) {
+      setCurrentBeepId(nextBeeps[0].id);
+      setWorkingBeep(JSON.parse(JSON.stringify(nextBeeps[0])));
     }
   };
 
   const updateBeepName = (id: string, name: string) => {
+    const safeName = name.replace(/[^a-zA-Z0-9_]/g, '');
     setProject(prev => ({
       ...prev,
-      beeps: prev.beeps.map(b => b.id === id ? { ...b, name: name.replace(/[^a-zA-Z0-9_]/g, '') } : b)
+      beeps: prev.beeps.map(b => b.id === id ? { ...b, name: safeName } : b)
     }));
+    if (id === currentBeepId && workingBeep) {
+      setWorkingBeep(prev => prev ? { ...prev, name: safeName } : prev);
+    }
   };
 
   const exportProject = () => {
@@ -147,7 +206,7 @@ const App: React.FC = () => {
           <Sidebar 
             beeps={project.beeps}
             currentBeepId={currentBeepId}
-            onSelectBeep={(id) => { setCurrentBeepId(id); setIsSidebarOpen(false); }}
+            onSelectBeep={handleSelectBeep}
             onAddBeep={addBeep}
             onDuplicateBeep={duplicateBeep}
             onUpdateName={updateBeepName}
@@ -166,12 +225,15 @@ const App: React.FC = () => {
         {/* Main Area: PianoRoll (Top) + Code/WAV (Bottom) */}
         <div className="flex-1 flex flex-col overflow-hidden bg-gray-900 shadow-inner w-full min-w-0">
           <main className="flex-1 relative overflow-hidden flex flex-col">
-            {currentBeep ? (
+            {workingBeep ? (
               <div className="flex-1 flex flex-col relative overflow-hidden">
                 <PianoRoll 
-                  beep={currentBeep}
+                  beep={workingBeep}
                   onUpdate={updateBeep}
                   onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+                  onSave={handleSave}
+                  onDiscard={handleDiscard}
+                  isDirty={isDirty}
                 />
 
                 {/* Bottom Toggle Tab */}
@@ -195,9 +257,9 @@ const App: React.FC = () => {
           </main>
 
           {/* Bottom Pane - Code & WAV */}
-          {currentBeep && isBottomPaneOpen && (
+          {workingBeep && isBottomPaneOpen && (
             <aside className="h-auto lg:h-64 border-t border-gray-800 bg-gray-950 flex flex-col lg:flex-row p-3 lg:p-4 gap-3 lg:gap-4 overflow-y-auto lg:overflow-hidden shrink-0">
-              <CodeReview beep={currentBeep} />
+              <CodeReview beep={workingBeep} />
             </aside>
           )}
         </div>
