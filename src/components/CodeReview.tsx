@@ -113,9 +113,41 @@ const CodeReview: React.FC<CodeReviewProps> = ({ beep }) => {
     const url = URL.createObjectURL(wavBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${beep.name}.wav`;
+    
+    // Format timestamp
+    const d = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const timestamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const safeName = (beep.name || 'Untitled').replace(/\s+/g, '_');
+    
+    a.download = `${safeName}_${timestamp}.wav`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }, 100);
+  };
+
+  const downloadText = () => {
+    const blob = new Blob([code], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    
+    // Format timestamp
+    const d = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const timestamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const safeName = (beep.name || 'Untitled').replace(/\s+/g, '_');
+    
+    a.download = `beep_${safeName}_${timestamp}.cpp`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }, 100);
   };
 
   // Minimal WAV writer
@@ -158,14 +190,22 @@ const CodeReview: React.FC<CodeReviewProps> = ({ beep }) => {
       <div className="flex-1 flex flex-col bg-gray-950/60 rounded-lg border border-gray-800 p-3 overflow-hidden min-w-0">
         <div className="flex items-center justify-between mb-2">
             <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">C Array Output</span>
-            <button 
-                onClick={handleCopy}
-                className={`text-[10px] px-2 py-1 rounded transition-all ${
-                    copying ? 'bg-green-500 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                }`}
-            >
-                {copying ? 'COPIED!' : 'COPY CODE'}
-            </button>
+            <div className="flex space-x-2">
+              <button 
+                  onClick={handleCopy}
+                  className={`text-[10px] px-2 py-1 rounded transition-all ${
+                      copying ? 'bg-green-500 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+                  }`}
+              >
+                  {copying ? 'COPIED!' : 'COPY CODE'}
+              </button>
+              <button 
+                  onClick={downloadText}
+                  className="text-[10px] px-2 py-1 rounded transition-all bg-gray-800 text-gray-400 hover:bg-blue-600 hover:text-white"
+              >
+                  DOWNLOAD
+              </button>
+            </div>
         </div>
         <pre className="text-[11px] text-blue-400 overflow-auto flex-1 leading-relaxed custom-scrollbar">
           {code}
