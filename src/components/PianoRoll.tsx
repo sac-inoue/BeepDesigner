@@ -5,9 +5,10 @@ import type { Beep, Note, NoteEntry } from '../types';
 interface PianoRollProps {
   beep: Beep;
   onUpdate: (updatedBeep: Beep) => void;
+  onToggleSidebar?: () => void;
 }
 
-const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate }) => {
+const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }) => {
   const scale = useMemo(() => getScale(), []);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -231,42 +232,75 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate }) => {
   return (
     <div className="p-8 h-full flex flex-col">
       {/* Controls Bar */}
-      <div className="mb-6 flex items-center space-x-6 shrink-0">
+      <div className="mb-4 lg:mb-6 flex flex-wrap items-center gap-3 lg:gap-6 shrink-0">
+        {onToggleSidebar && (
+          <button 
+            onClick={onToggleSidebar}
+            className="lg:hidden p-2 text-gray-400 hover:text-white bg-gray-800 rounded-lg"
+            title="Menu"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+          </button>
+        )}
+
         <div className="flex flex-col space-y-1">
           <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest pl-1">Sound Name</span>
           <input 
             type="text"
             value={beep.name}
             onChange={e => onUpdate({...beep, name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '')})}
-            className="bg-gray-950 border border-gray-800 focus:border-blue-500/50 outline-none rounded-lg px-3 py-2 text-sm text-blue-400 font-mono w-48 transition-all"
+            className="bg-gray-950 border border-gray-800 focus:border-blue-500/50 outline-none rounded-lg px-3 py-2 text-sm text-blue-400 font-mono w-32 lg:w-48 transition-all"
             placeholder="Pattern Name"
           />
         </div>
 
-        <div className="h-10 w-px bg-gray-800 mx-2" />
+        <div className="hidden lg:block h-10 w-px bg-gray-800 mx-2" />
 
         <div className="flex flex-col space-y-1">
           <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest pl-1">Pitch Shift</span>
-          <div className="flex space-x-2">
+          <div className="flex space-x-1 lg:space-x-2">
             <button 
                 onClick={() => {
                   const newNotes = beep.notes.map(n => ({ ...n, freq: n.freq * 2 }));
                   onUpdate({ ...beep, notes: newNotes });
                 }}
-                className="text-[10px] bg-gray-800 hover:bg-gray-700 transition-all font-mono py-2 px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white"
+                className="text-[10px] bg-gray-800 hover:bg-gray-700 transition-all font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white"
                 title="Octave Up"
             >
-                OCT +
+                OCT+
             </button>
             <button 
                 onClick={() => {
                   const newNotes = beep.notes.map(n => ({ ...n, freq: n.freq / 2 }));
                   onUpdate({ ...beep, notes: newNotes });
                 }}
-                className="text-[10px] bg-gray-800 hover:bg-gray-700 transition-all font-mono py-2 px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white"
+                className="text-[10px] bg-gray-800 hover:bg-gray-700 transition-all font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white"
                 title="Octave Down"
             >
-                OCT -
+                OCT-
+            </button>
+            <div className="w-px h-6 bg-gray-800 self-center mx-1" />
+            <button 
+                onClick={() => {
+                  const ratio = Math.pow(2, 1/12);
+                  const newNotes = beep.notes.map(n => ({ ...n, freq: Math.round(n.freq * ratio) }));
+                  onUpdate({ ...beep, notes: newNotes });
+                }}
+                className="text-[10px] bg-gray-800 hover:bg-gray-700 transition-all font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white"
+                title="Note Up (+1 Semitone)"
+            >
+                NOTE+
+            </button>
+            <button 
+                onClick={() => {
+                  const ratio = Math.pow(2, 1/12);
+                  const newNotes = beep.notes.map(n => ({ ...n, freq: Math.round(n.freq / ratio) }));
+                  onUpdate({ ...beep, notes: newNotes });
+                }}
+                className="text-[10px] bg-gray-800 hover:bg-gray-700 transition-all font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white"
+                title="Note Down (-1 Semitone)"
+            >
+                NOTE-
             </button>
           </div>
         </div>
