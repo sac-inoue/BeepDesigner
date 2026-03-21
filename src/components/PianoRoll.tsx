@@ -1,6 +1,43 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { GRID_MS, getScale } from '../types';
-import type { Beep, Note, NoteEntry } from '../types';
+import type { Beep, Note } from '../types';
+
+// Simple Auto-correlation pitch detection
+function autoCorrelate(buf: Float32Array, sampleRate: number): number {
+  let SIZE = buf.length;
+  let rms = 0;
+
+  for (let i = 0; i < SIZE; i++) {
+    let val = buf[i];
+    rms += val * val;
+  }
+  rms = Math.sqrt(rms / SIZE);
+  if (rms < 0.01) return -1; // quiet
+
+  let r1 = 0, r2 = SIZE - 1, thres = 0.2;
+  for (let i = 0; i < SIZE / 2; i++) if (Math.abs(buf[i]) < thres) { r1 = i; break; }
+  for (let i = 1; i < SIZE / 2; i++) if (Math.abs(buf[SIZE - i]) < thres) { r2 = SIZE - i; break; }
+
+  buf = buf.slice(r1, r2);
+  SIZE = buf.length;
+
+  let c = new Float32Array(SIZE).fill(0);
+  for (let i = 0; i < SIZE; i++)
+    for (let j = 0; j < SIZE - i; j++)
+      c[i] = c[i] + buf[j] * buf[j + i];
+
+  let d = 0; while (c[d] > c[d + 1]) d++;
+  let maxval = -1, maxpos = -1;
+  for (let i = d; i < SIZE; i++) {
+    if (c[i] > maxval) {
+      maxval = c[i];
+      maxpos = i;
+    }
+  }
+  let T0 = maxpos;
+
+  return sampleRate / T0;
+}
 
 interface PianoRollProps {
   beep: Beep;
@@ -19,6 +56,15 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [dragMode, setDragMode] = useState<'add' | 'remove' | null>(null);
+
+  // Mic Recording State
+  const [isRecordingMic, setIsRecordingMic] = useState(false);
+  const [micProgress, setMicProgress] = useState(0); 
+  const [micSpeed, setMicSpeed] = useState(1); // 1x, 2x, 3x
+  const [micCountdown, setMicCountdown] = useState<number | null>(null);
+  const micCountdownRef = useRef<number | null>(null);
+  const micIntervalRef = useRef<number | null>(null);
+  const recordedFrequenciesRef = useRef<number[]>([]);
 
   const totalCells = (beep.durationSec * 1000) / GRID_MS;
 
@@ -48,30 +94,6 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
     osc.stop(ctx.currentTime + duration);
   };
 
-  const toggleNote = (cellIndex: number, freq: number) => {
-    const startMs = cellIndex * GRID_MS;
-    const existingNoteIndex = beep.notes.findIndex(n => n.startMs === startMs);
-    
-    const newNotes = [...beep.notes];
-    
-    if (existingNoteIndex >= 0) {
-      if (newNotes[existingNoteIndex].freq === freq) {
-        // Same note, remove it
-        newNotes.splice(existingNoteIndex, 1);
-      } else {
-        // Different freq, update
-        newNotes[existingNoteIndex] = { freq, durationMs: GRID_MS, startMs };
-        playNote(freq);
-      }
-    } else {
-      // Add new
-      newNotes.push({ freq, durationMs: GRID_MS, startMs });
-      playNote(freq);
-    }
-
-    onUpdate({ ...beep, notes: newNotes });
-  };
-
   const handleMouseDown = (cellIndex: number, freq: number, hasNote: boolean) => {
     setIsDragging(true);
     const mode = hasNote ? 'remove' : 'add';
@@ -92,10 +114,9 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
     let newNotes = [...beep.notes];
     if (mode === 'add') {
       if (existingNote && existingNote.freq === freq) return;
-      // Remove any note at this time slot (single note constraint)
       newNotes = newNotes.filter(n => n.startMs !== startMs);
       newNotes.push({ freq, durationMs: GRID_MS, startMs });
-      playNote(freq, 0.05); // Short feedback
+      playNote(freq, 0.05);
     } else {
       if (existingNote && existingNote.freq === freq) {
         newNotes = newNotes.filter(n => n.startMs !== startMs);
@@ -128,7 +149,6 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
     setIsPlaying(true);
     startTimeRef.current = ctx.currentTime;
     
-    // Merge notes for legato playback
     const totalCells = (beep.durationSec * 1000) / GRID_MS;
     const mergedNotes: { freq: number; durationMs: number; startMs: number }[] = [];
     
@@ -162,7 +182,6 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
       osc.type = 'square';
       osc.frequency.setValueAtTime(note.freq, ctx.currentTime + note.startMs / 1000);
       
-      // Short attack/release to prevent clicks
       const attack = 0.001; 
       const release = 0.001;
       
@@ -195,10 +214,6 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
     setIsPlaying(false);
     setCurrentTime(0);
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
-    // Web Audio API stop is tricky without node references, but since it's short, it's ok for now. 
-    // Usually you'd keep track of nodes to stop them.
-    // Let's do a simple hack to stop sound by closing context if needed or just letting it finish.
-    // For a real app, I'd track all active oscillators.
     if (audioCtxRef.current) {
         audioCtxRef.current.close().then(() => {
             audioCtxRef.current = null;
@@ -207,19 +222,13 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
   };
 
   useEffect(() => {
-    // Scroll to the first note, or C4 if empty
     if (containerRef.current) {
-      let targetIndex = 0; // Relative to C4 (index 0)
-      
+      let targetIndex = 0;
       if (beep.notes.length > 0) {
-        // Find first note
         const firstNote = [...beep.notes].sort((a,b) => a.startMs - b.startMs)[0];
         const noteEntry = scale.find(s => Math.abs(s.freq - firstNote.freq) < 1);
-        if (noteEntry) {
-          targetIndex = noteEntry.index;
-        }
+        if (noteEntry) targetIndex = noteEntry.index;
       }
-
       const visualIndex = scale.findIndex(s => s.index === targetIndex);
       if (visualIndex >= 0) {
         const rowHeight = 24;
@@ -229,15 +238,146 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
     }
   }, [beep.id, scale]);
 
+  const startMicRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ctx = getAudioCtx();
+      
+      // Start Countdown
+      let count = 3;
+      setMicCountdown(count);
+      
+      const countInterval = window.setInterval(() => {
+        count--;
+        micCountdownRef.current = count;
+        if (count === 1) {
+          beginRecording(stream, ctx);
+        }
+        
+        if (count === 0) {
+          clearInterval(countInterval);
+          setMicCountdown(null);
+          micCountdownRef.current = null;
+        } else {
+          setMicCountdown(count);
+        }
+      }, 1000);
+
+    } catch (err) {
+      console.error("Mic error:", err);
+      alert("Microphone access is required.");
+    }
+  };
+
+  const beginRecording = (stream: MediaStream, ctx: AudioContext) => {
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+
+    const buffer = new Float32Array(analyser.fftSize);
+    recordedFrequenciesRef.current = [];
+    setMicProgress(0);
+
+    // Record a bit more than planned to allow for silence skip
+    // Plan: pattern duration * speed + roughly 1.5s extra
+    const baseSteps = totalCells * micSpeed;
+    const extraSteps = Math.floor(1500 / GRID_MS) * micSpeed; 
+    const targetSteps = baseSteps + extraSteps;
+    
+    let step = 0;
+    let hasStartedUI = false;
+
+    micIntervalRef.current = window.setInterval(() => {
+      analyser.getFloatTimeDomainData(buffer);
+      const freq = autoCorrelate(buffer, ctx.sampleRate);
+      recordedFrequenciesRef.current.push(freq > 0 ? freq : 0);
+      
+      // Control UI: only start showing red bar when countdown is null
+      if (micCountdownRef.current === null || micCountdownRef.current === 0) {
+        if (!hasStartedUI) {
+          setIsRecordingMic(true);
+          hasStartedUI = true;
+        }
+        step++;
+        setMicProgress((step / baseSteps) * 100);
+      }
+
+      if (step >= baseSteps || recordedFrequenciesRef.current.length >= targetSteps) {
+        stopMicRecording(stream);
+      }
+    }, GRID_MS);
+  };
+
+  const stopMicRecording = (stream?: MediaStream) => {
+    if (micIntervalRef.current) {
+      clearInterval(micIntervalRef.current);
+      micIntervalRef.current = null;
+    }
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    processRecordedNotes();
+    setIsRecordingMic(false);
+    setMicProgress(0);
+  };
+
+  const processRecordedNotes = () => {
+    const allRawFreqs = recordedFrequenciesRef.current;
+    if (allRawFreqs.length === 0) return;
+
+    // Head-Perfecting: Find first note and skip silence
+    const firstSoundIdx = allRawFreqs.findIndex(f => f > 0);
+    if (firstSoundIdx === -1) return; // No sound found
+
+    // Take current duration worth of frequencies starting from first sound
+    const rawFreqs = allRawFreqs.slice(firstSoundIdx, firstSoundIdx + (totalCells * micSpeed));
+
+    // Downsample (Average/Pick in window of micSpeed)
+    const processedFreqs: number[] = [];
+    for (let i = 0; i < totalCells; i++) {
+        const window = rawFreqs.slice(i * micSpeed, (i + 1) * micSpeed);
+        const validPitches = window.filter(f => f > 0);
+        if (validPitches.length > (micSpeed / (micSpeed === 1 ? 2 : 3))) { // More lenient for slow rec
+            const avg = validPitches.reduce((a, b) => a + b, 0) / validPitches.length;
+            processedFreqs.push(avg);
+        } else {
+            processedFreqs.push(0);
+        }
+    }
+
+    // Find reference pitch from first sound
+    const firstValidFreq = processedFreqs.find(f => f > 0);
+    if (!firstValidFreq) return;
+
+    const baseScaleFreq = scale.find(s => s.index === 0)?.freq || 4186;
+    const newNotes: Note[] = [];
+
+    processedFreqs.forEach((f, i) => {
+      if (f > 0) {
+        const interval = 12 * Math.log2(f / firstValidFreq);
+        const targetFreq = Math.round(baseScaleFreq * Math.pow(2, Math.round(interval) / 12));
+        const nearest = scale.reduce((prev, curr) => 
+            Math.abs(curr.freq - targetFreq) < Math.abs(prev.freq - targetFreq) ? curr : prev
+        );
+
+        newNotes.push({
+          freq: nearest.freq,
+          durationMs: GRID_MS,
+          startMs: i * GRID_MS
+        });
+      }
+    });
+
+    onUpdate({ ...beep, notes: newNotes });
+  };
+
   return (
-    <div className="p-8 h-full flex flex-col">
+    <div className="p-4 lg:p-8 h-full flex flex-col">
       {/* Controls Bar */}
       <div className="mb-4 lg:mb-6 flex flex-wrap items-center gap-3 lg:gap-6 shrink-0">
         {onToggleSidebar && (
           <button 
             onClick={onToggleSidebar}
             className="lg:hidden p-2 text-gray-400 hover:text-white bg-gray-800 rounded-lg"
-            title="Menu"
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
@@ -250,7 +390,6 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
             value={beep.name}
             onChange={e => onUpdate({...beep, name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '')})}
             className="bg-gray-950 border border-gray-800 focus:border-blue-500/50 outline-none rounded-lg px-3 py-2 text-sm text-blue-400 font-mono w-32 lg:w-48 transition-all"
-            placeholder="Pattern Name"
           />
         </div>
 
@@ -259,48 +398,36 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
         <div className="flex flex-col space-y-1">
           <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest pl-1">Pitch Shift</span>
           <div className="flex space-x-1 lg:space-x-2">
-            <button 
-                onClick={() => {
-                  const newNotes = beep.notes.map(n => ({ ...n, freq: n.freq * 2 }));
-                  onUpdate({ ...beep, notes: newNotes });
-                }}
-                className="text-[10px] bg-gray-800 hover:bg-gray-700 transition-all font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white"
-                title="Octave Up"
-            >
-                OCT+
-            </button>
-            <button 
-                onClick={() => {
-                  const newNotes = beep.notes.map(n => ({ ...n, freq: n.freq / 2 }));
-                  onUpdate({ ...beep, notes: newNotes });
-                }}
-                className="text-[10px] bg-gray-800 hover:bg-gray-700 transition-all font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white"
-                title="Octave Down"
-            >
-                OCT-
-            </button>
+            <button onClick={() => onUpdate({ ...beep, notes: beep.notes.map(n => ({ ...n, freq: n.freq * 2 })) })} className="text-[10px] bg-gray-800 hover:bg-gray-700 font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white">OCT+</button>
+            <button onClick={() => onUpdate({ ...beep, notes: beep.notes.map(n => ({ ...n, freq: n.freq / 2 })) })} className="text-[10px] bg-gray-800 hover:bg-gray-700 font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white">OCT-</button>
             <div className="w-px h-6 bg-gray-800 self-center mx-1" />
-            <button 
-                onClick={() => {
-                  const ratio = Math.pow(2, 1/12);
-                  const newNotes = beep.notes.map(n => ({ ...n, freq: Math.round(n.freq * ratio) }));
-                  onUpdate({ ...beep, notes: newNotes });
-                }}
-                className="text-[10px] bg-gray-800 hover:bg-gray-700 transition-all font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white"
-                title="Note Up (+1 Semitone)"
+            <button onClick={() => onUpdate({ ...beep, notes: beep.notes.map(n => ({ ...n, freq: Math.round(n.freq * Math.pow(2, 1/12)) })) })} className="text-[10px] bg-gray-800 hover:bg-gray-700 font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white">NOTE+</button>
+            <button onClick={() => onUpdate({ ...beep, notes: beep.notes.map(n => ({ ...n, freq: Math.round(n.freq / Math.pow(2, 1/12)) })) })} className="text-[10px] bg-gray-800 hover:bg-gray-700 font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white">NOTE-</button>
+          </div>
+        </div>
+
+        <div className="h-10 w-px bg-gray-800 mx-2" />
+
+        <div className="flex flex-col space-y-1">
+          <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest pl-1">Live Input</span>
+          <div className="flex items-center space-x-2">
+            <select 
+              value={micSpeed}
+              onChange={e => setMicSpeed(Number(e.target.value))}
+              className="bg-gray-950 text-[10px] border border-gray-800 outline-none rounded px-2 py-1.5 text-indigo-400 font-bold"
+              disabled={isRecordingMic || micCountdown !== null}
             >
-                NOTE+
-            </button>
+              <option value={1}>1x Speed</option>
+              <option value={2}>2x Slow</option>
+              <option value={3}>3x Slow</option>
+            </select>
             <button 
-                onClick={() => {
-                  const ratio = Math.pow(2, 1/12);
-                  const newNotes = beep.notes.map(n => ({ ...n, freq: Math.round(n.freq / ratio) }));
-                  onUpdate({ ...beep, notes: newNotes });
-                }}
-                className="text-[10px] bg-gray-800 hover:bg-gray-700 transition-all font-mono py-1.5 lg:py-2 px-2 lg:px-3 rounded-lg border border-gray-700 text-gray-400 hover:text-white"
-                title="Note Down (-1 Semitone)"
+                onClick={isRecordingMic ? () => stopMicRecording() : startMicRecording}
+                disabled={micCountdown !== null}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-bold transition-all ${isRecordingMic ? 'bg-red-500 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-500'} text-white text-xs disabled:opacity-50`}
             >
-                NOTE-
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" /></svg>
+                <span>{isRecordingMic ? 'STOP MIC' : (micCountdown !== null ? `REC IN ${micCountdown}...` : 'MIC RECORD')}</span>
             </button>
           </div>
         </div>
@@ -309,15 +436,9 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
 
         <button 
           onClick={startPlayback}
-          className={`flex items-center space-x-2 px-6 py-2 rounded-full font-black tracking-widest transition-all ${
-            isPlaying ? 'bg-red-500 hover:bg-red-400' : 'bg-green-600 hover:bg-green-500'
-          } text-white shadow-lg`}
+          className={`flex items-center space-x-2 px-6 py-2 rounded-lg font-bold transition-all ${isPlaying ? 'bg-red-500 shadow-red-500/20' : 'bg-green-600 shadow-green-600/20'} text-white text-sm`}
         >
-          {isPlaying ? (
-            <><div className="w-3 h-3 bg-white" /> <span>STOP</span></>
-          ) : (
-            <><div className="w-0 h-0 border-t-[6px] border-t-transparent border-b-[6px] border-b-transparent border-l-[10px] border-l-white" /> <span>PLAY</span></>
-          )}
+          {isPlaying ? 'STOP' : 'PLAY'}
         </button>
 
         <div className="flex items-center space-x-3 bg-gray-800/40 p-1 rounded-lg border border-gray-800">
@@ -333,46 +454,44 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
 
         <button 
           onClick={() => onUpdate({...beep, notes: []})}
-          className="text-[10px] text-gray-500 hover:text-red-400 transition-colors uppercase font-bold tracking-widest border border-gray-800 hover:border-red-500/20 px-4 py-2 rounded-lg"
+          className="text-[10px] text-gray-500 hover:text-red-400 transition-colors uppercase font-bold tracking-widest border border-gray-800 px-4 py-2 rounded-lg"
         >
-          Clear All
+          Clear
         </button>
       </div>
 
-      <div className="relative border border-gray-800 rounded-xl overflow-hidden shadow-2xl bg-gray-950 select-none flex-1">
+      <div className="relative border border-gray-800 rounded-xl overflow-hidden shadow-2xl bg-gray-950 flex-1 flex flex-col">
+        {/* Recording Progress Overlay */}
+        {(isRecordingMic || micCountdown !== null) && (
+          <div className="absolute top-0 left-0 right-0 z-50 h-1 bg-gray-800">
+            <div 
+              className={`h-full ${micCountdown !== null ? 'bg-indigo-500' : 'bg-red-500'} shadow-[0_0_10px_currentColor] transition-all duration-300`} 
+              style={{ width: micCountdown !== null ? '100%' : `${micProgress}%` }}
+            />
+          </div>
+        )}
         
-        {/* Scrollable Container */}
-        <div className="absolute inset-0 overflow-auto scroll-smooth custom-scrollbar" ref={containerRef}>
-          <div 
-            className="relative"
-            style={{ 
-              width: `${totalCells * 40 + 80}px`, // 40px per cell, 80px for headers
-              height: `${scale.length * 24}px`
-            }}
-          >
-            {/* Headers (Y-Axis) */}
+        {micCountdown !== null && (
+          <div className="absolute inset-0 z-40 bg-gray-900/40 backdrop-blur-sm flex items-center justify-center">
+            <div className="text-8xl font-black text-white animate-ping drop-shadow-2xl">
+              {micCountdown}
+            </div>
+          </div>
+        )}
+        
+        <div className="relative flex-1 overflow-auto scroll-smooth custom-scrollbar" ref={containerRef}>
+          <div className="relative" style={{ width: `${totalCells * 40 + 80}px`, height: `${scale.length * 24}px` }}>
             <div className="sticky left-0 top-0 z-20 w-20 bg-gray-950/95 border-r border-gray-800 h-full flex flex-col backdrop-blur-sm">
-              {scale.map((s, i) => (
-                <div 
-                  key={s.index} 
-                  className={`h-[24px] flex items-center px-3 text-[9px] font-mono border-b border-gray-900/50 ${
-                    s.name.includes('#') ? 'bg-gray-900/40 text-gray-600' : 'text-gray-400'
-                  }`}
-                  title={`${s.freq} Hz`}
-                >
+              {scale.map((s) => (
+                <div key={s.index} className={`h-[24px] flex items-center px-3 text-[9px] font-mono border-b border-gray-900/50 ${s.name.includes('#') ? 'bg-gray-900/40 text-gray-600' : 'text-gray-400'}`}>
                   {s.name}{s.octave}
                 </div>
               ))}
             </div>
 
-            {/* Grid Area */}
             <div 
               className="absolute left-20 top-0 h-full"
-              style={{
-                display: 'grid',
-                gridTemplateColumns: `repeat(${totalCells}, 40px)`,
-                gridTemplateRows: `repeat(${scale.length}, 24px)`
-              }}
+              style={{ display: 'grid', gridTemplateColumns: `repeat(${totalCells}, 40px)`, gridTemplateRows: `repeat(${scale.length}, 24px)` }}
             >
               {scale.map((s, rowIndex) => (
                 Array.from({ length: totalCells }).map((_, colIndex) => {
@@ -384,29 +503,19 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
                   return (
                     <div 
                       key={`${rowIndex}-${colIndex}`}
-                      className={`border-r border-b border-gray-900/30 transition-colors relative ${
-                        s.name.includes('#') ? 'bg-gray-900/20' : ''
-                      } ${colIndex % 4 === 0 ? 'border-l-[1.5px] border-l-gray-800/50' : ''}`}
+                      className={`border-r border-b border-gray-900/30 transition-colors relative ${s.name.includes('#') ? 'bg-gray-900/20' : ''} ${colIndex % 4 === 0 ? 'border-l-[1.5px] border-l-gray-800/50' : ''}`}
                       onMouseDown={() => handleMouseDown(colIndex, s.freq, !!isActive)}
                       onMouseEnter={() => handleMouseEnter(colIndex, s.freq)}
                     >
-                      {isActive && (
-                        <div className="absolute inset-0 bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.6)] z-10 rounded-sm border border-blue-400/50" />
-                      )}
-                      {isOtherActive && (
-                        <div className="absolute inset-0 bg-gray-800/30" />
-                      )}
+                      {isActive && <div className="absolute inset-0 bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.6)] z-10 rounded-sm border border-blue-400/50" />}
+                      {isOtherActive && <div className="absolute inset-0 bg-gray-800/30" />}
                     </div>
                   );
                 })
               ))}
               
-              {/* Playback Cursor */}
               {isPlaying && (
-                <div 
-                  className="absolute top-0 bottom-0 w-0.5 bg-yellow-400 shadow-[0_0_10px_#facc15] z-30 transition-none pointer-events-none"
-                  style={{ left: `${(currentTime / GRID_MS) * 40}px` }}
-                />
+                <div className="absolute top-0 bottom-0 w-0.5 bg-yellow-400 shadow-[0_0_10px_#facc15] z-30 pointer-events-none" style={{ left: `${(currentTime / GRID_MS) * 40}px` }} />
               )}
             </div>
           </div>
@@ -415,18 +524,10 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
 
       <div className="mt-4 flex items-center justify-between text-gray-500 font-mono text-[10px] uppercase tracking-wider">
           <div className="flex space-x-8">
-            <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-blue-500 rounded-sm" />
-                <span>Note</span>
-            </div>
-            <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-gray-800 rounded-sm" />
-                <span>Empty (Rest)</span>
-            </div>
+            <div className="flex items-center space-x-2"><div className="w-2 h-2 bg-blue-500 rounded-sm" /><span>Note</span></div>
+            <div className="flex items-center space-x-2"><div className="w-2 h-2 bg-gray-800 rounded-sm" /><span>Empty</span></div>
           </div>
-          <div>
-            1 Grid = {GRID_MS}ms (1/16s)
-          </div>
+          <div>1 Grid = {GRID_MS}ms (1/16s)</div>
       </div>
     </div>
   );
