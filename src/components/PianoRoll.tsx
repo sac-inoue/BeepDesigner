@@ -2,6 +2,26 @@ import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { GRID_MS, getScale } from '../types';
 import type { Beep, Note } from '../types';
 
+let globalAudioCtx: AudioContext | null = null;
+
+const getGlobalAudioCtx = () => {
+  if (!globalAudioCtx || globalAudioCtx.state === 'closed') {
+    globalAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    
+    // Safari/iOS Unlock Trick
+    const osc = globalAudioCtx.createOscillator();
+    const gain = globalAudioCtx.createGain();
+    gain.gain.value = 0;
+    osc.connect(gain);
+    gain.connect(globalAudioCtx.destination);
+    osc.start(0);
+    osc.stop(globalAudioCtx.currentTime + 0.001);
+    
+    globalAudioCtx.resume();
+  }
+  return globalAudioCtx;
+};
+
 // Simple Auto-correlation pitch detection
 function autoCorrelate(buf: Float32Array, sampleRate: number): number {
   let SIZE = buf.length;
@@ -49,9 +69,8 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
   const scale = useMemo(() => getScale(), []);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const animationRef = useRef<number | null>(null);
-  const startTimeRef = useRef<number>(0);
+  const activeOscillatorsRef = useRef<OscillatorNode[]>([]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -69,29 +88,31 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
   const totalCells = (beep.durationSec * 1000) / GRID_MS;
 
   // Initialize Audio
-  const getAudioCtx = () => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-    }
-    return audioCtxRef.current;
-  };
+  // Removed old getAudioCtx
 
   const playNote = (freq: number, duration: number = 0.1) => {
-    const ctx = getAudioCtx();
+    const ctx = getGlobalAudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+    
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     
     osc.type = 'square';
-    osc.frequency.setValueAtTime(freq, ctx.currentTime);
     
-    gain.gain.setValueAtTime(0.2, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+    const now = ctx.currentTime;
+    osc.frequency.setValueAtTime(freq, now);
+    
+    // Safari-safe envelope targeting 'now' accurately
+    gain.gain.value = 0;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.setTargetAtTime(0.2, now, 0.01);
+    gain.gain.setTargetAtTime(0, now + duration - 0.01, 0.01);
     
     osc.connect(gain);
     gain.connect(ctx.destination);
     
-    osc.start();
-    osc.stop(ctx.currentTime + duration);
+    osc.start(now);
+    osc.stop(now + duration);
   };
 
   const handleMouseDown = (cellIndex: number, freq: number, hasNote: boolean) => {
@@ -143,11 +164,17 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
       return;
     }
     
-    const ctx = getAudioCtx();
-    if (ctx.state === 'suspended') ctx.resume();
+    const ctx = getGlobalAudioCtx();
+    ctx.resume(); // Synchronous resume on user gesture
     
     setIsPlaying(true);
-    startTimeRef.current = ctx.currentTime;
+    
+    // Use 150ms buffer
+    const schedulingOffset = 0.15;
+    const now = ctx.currentTime;
+    const uiStartPerfTime = performance.now();
+    
+    activeOscillatorsRef.current = [];
     
     const totalCells = (beep.durationSec * 1000) / GRID_MS;
     const mergedNotes: { freq: number; durationMs: number; startMs: number }[] = [];
@@ -180,31 +207,38 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'square';
-      osc.frequency.setValueAtTime(note.freq, ctx.currentTime + note.startMs / 1000);
+      const start = now + schedulingOffset + note.startMs / 1000;
+      const end = now + schedulingOffset + (note.startMs + note.durationMs) / 1000;
       
-      const attack = 0.001; 
-      const release = 0.001;
+      osc.frequency.value = note.freq;
+      osc.frequency.setValueAtTime(note.freq, start);
       
-      gain.gain.setValueAtTime(0, ctx.currentTime + note.startMs / 1000);
-      gain.gain.linearRampToValueAtTime(0.2, ctx.currentTime + note.startMs / 1000 + attack);
-      gain.gain.setValueAtTime(0.2, ctx.currentTime + (note.startMs + note.durationMs) / 1000 - release);
-      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + (note.startMs + note.durationMs) / 1000);
+      const attack = 0.005; 
+      const release = 0.005;
+      
+      gain.gain.value = 0;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.setTargetAtTime(0.2, start, attack);
+      gain.gain.setTargetAtTime(0, end - release, release);
       
       osc.connect(gain);
       gain.connect(ctx.destination);
       
-      osc.start(ctx.currentTime + note.startMs / 1000);
-      osc.stop(ctx.currentTime + (note.startMs + note.durationMs) / 1000);
+      osc.start(start);
+      osc.stop(end);
+      
+      activeOscillatorsRef.current.push(osc);
     });
 
     const updateProgress = () => {
-      const elapsed = (ctx.currentTime - startTimeRef.current) * 1000;
-      if (elapsed >= beep.durationSec * 1000) {
-        setIsPlaying(false);
-        setCurrentTime(0);
+      const elapsed = performance.now() - uiStartPerfTime - (schedulingOffset * 1000);
+      const totalDuration = beep.durationSec * 1000;
+      
+      if (elapsed >= totalDuration) {
+        stopPlayback();
         return;
       }
-      setCurrentTime(elapsed);
+      setCurrentTime(elapsed < 0 ? 0 : elapsed);
       animationRef.current = requestAnimationFrame(updateProgress);
     };
     animationRef.current = requestAnimationFrame(updateProgress);
@@ -214,11 +248,16 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
     setIsPlaying(false);
     setCurrentTime(0);
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
-    if (audioCtxRef.current) {
-        audioCtxRef.current.close().then(() => {
-            audioCtxRef.current = null;
-        });
-    }
+    
+    activeOscillatorsRef.current.forEach(osc => {
+      try {
+        osc.stop();
+        osc.disconnect();
+      } catch (e) {
+        // Ignored
+      }
+    });
+    activeOscillatorsRef.current = [];
   };
 
   useEffect(() => {
@@ -241,7 +280,8 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar }
   const startMicRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const ctx = getAudioCtx();
+      const ctx = getGlobalAudioCtx();
+      if (ctx.state === 'suspended') await ctx.resume();
       
       // Start Countdown
       let count = 3;
