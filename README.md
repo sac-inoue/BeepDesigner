@@ -2,6 +2,8 @@
 
 A high-performance web-based sound design tool for microcontrollers (e.g., ESP32) using piezo buzzers.
 
+![Beep Designer Screenshot](public/screenshot.png)
+
 [日本語のREADMEはこちら](#beep-designer-日本語)
 
 ---
