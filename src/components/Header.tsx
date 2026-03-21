@@ -26,15 +26,16 @@ const Header: React.FC<HeaderProps> = ({ projectName, setProjectName, onExport, 
       />
     </div>
 
-    <div className="ml-auto flex items-center space-x-1 lg:space-x-4">
-      <div className="relative group">
+    <div className="ml-auto flex items-center space-x-2 lg:space-x-4">
+      <div className="relative group overflow-hidden rounded-lg">
         <input 
           type="file" 
           onChange={onImport}
-          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
           accept=".json"
+          title="Import JSON"
         />
-        <button className="text-[10px] lg:text-xs font-bold text-gray-400 border border-gray-800 px-2 lg:px-4 py-1.5 lg:py-2 rounded-lg hover:bg-gray-800 transition-all flex items-center space-x-1 lg:space-x-2">
+        <button className="text-[10px] lg:text-xs font-bold text-gray-400 border border-gray-800 px-2 lg:px-4 py-1.5 lg:py-2 rounded-lg hover:bg-gray-800 transition-all flex items-center space-x-1 lg:space-x-2 relative z-0">
             <svg className="w-3 h-3 lg:w-4 lg:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
             <span className="hidden lg:inline">IMPORT JSON</span>
             <span className="lg:hidden">IMP</span>

@@ -4,63 +4,56 @@ A high-performance web-based sound design tool for microcontrollers (e.g., ESP32
 
 ![Beep Designer Screenshot](public/screenshot.png)
 
-[日本語のREADMEはこちら](#beep-designer-日本語)
+---
+
+**Beep Designer** は、ESP32 などのマイコンと圧電サウンダを用いた音響設計のための高性能 Web ツールです。ピアノロール・インターフェースにより、直感的なメロディ作成と実機に近いプレビュー、ソースコード生成を同時に実現します。
+
+### 主な機能 / Key Features
+
+- **ピアノロール・エディタ (Piano Roll Editor)**
+    - 62.5ms / 16分音符解像度の高精度なグリッドで編集を行う。
+    - ノートの配置、削除、一括オクターブ・シフトをサポートする。
+- **鼻歌入力 (Hum-to-Beep)**
+    - マイクから入力された音声をリアルタイムで解析し、ノートに変換する。
+    - スロー録音（1x, 2x, 3x）により、複雑なフレーズも正確に入力できる。
+    - 先行録音と無音トリミングにより、歌い出しをパターンの先頭に自動で合わせる。
+- **Web Audio プレビュー (Real-time Preview)**
+    - 圧電サウンダの音色を模した矩形波で再生を行う。
+    - 連続する同音高のノートを自動統合（レガート）し、途切れのない音を実現する。
+- **C言語・WAV書き出し (Export Options)**
+    - `{ 周波数, 長さ }` のペア形式で `uint32_t` 配列のソースコードを生成する。
+    - 44.1kHz モノラル WAV ファイルとしてブラウザ内でレンダリングし、ダウンロードする。
+- **プロジェクト管理 (Project Management)**
+    - ブラウザの Local Storage を利用して編集内容を自動保存する。
+    - JSON 形式によるプロジェクト全体のインポートおよびエクスポートをサポートする。
 
 ---
 
-## English Overview
+**Beep Designer** is a professional-grade web application for embedded engineers. It enables creating "musical" or "informative" beep patterns for piezo sounders via a familiar Piano Roll interface.
 
-**Beep Designer** is a professional-grade web application designed for embedded engineers and sound designers who need to create "musical" or "informative" beep patterns for piezo sounders. It provides a familiar Piano Roll interface and generates production-ready C code and high-quality WAV files instantly.
+### Key Features (English summary)
 
-### Key Features
+- **High-Precision Editing**: Edit melodies on a 62.5ms resolution grid.
+- **Hum-to-Beep**: Capture microphone input and convert it into musical notes.
+- **Slow Motion Recording**: Support for 2x and 3x slow recording for easier input.
+- **Head-Perfecting**: Automatically trim initial silence to align with the first beat.
+- **Hardware Simulation**: Preview sound with square waves simulating piezo buzzers.
+- **Code Generation**: Instant generation of C-code arrays for firmware development.
+- **WAV Export**: Direct rendering to standard WAV files in the browser.
 
-- **Piano Roll Editor**: High-precision grid (62.5ms / 16th note resolution).
-- **Web Audio Engine**: Real-time preview with square waves, simulating the actual piezo sounder timbre.
-- **Legato Playback**: Automatically merges consecutive identical notes for smooth, gap-free sound.
-- **C-Code Generation**: Generates `uint32_t` arrays formatted as `{ frequency, duration }` pairs for direct hardware implementation.
-- **WAV Export**: Direct rendering to 44.1kHz mono WAV files within the browser.
-- **Pitch Management**: Symmetric scale centered on C4 (mapped to musical C8 = 4186Hz) and batch Octave-Shift functionality.
-- **Project Persistence**: Local browser storage and JSON import/export support.
-
-### Getting Started
-
-1.  **Clone**: `git clone https://github.com/sac-inoue/BeepDesigner.git`
-2.  **Install**: `npm install`
-3.  **Run**: `npm run dev`
-4.  **Edit**: Open `http://localhost:5173/`, add patterns, and paint your melody!
-
----
-
-## Beep Designer (日本語)
-
-**Beep Designer** は、ESP32 などのマイコンと圧電サウンダを用いたビープ音設計のための高性能な Web ツールです。
-
-### 主な機能
-
-- **ピアノロール・エディタ**: 高精度なグリッド（62.5ms / 16分音符解像度）による直感的な操作。
-- **Web Audio プレビュー**: 圧電サウンダの音色を模した矩形波によるリアルタイム試聴。
-- **レガート再生**: 連続する同じ音高のノートを自動統合し、途切れのない滑らかなサウンドを実現。
-- **C言語コード生成**: `{ 周波数, 長さ }` のペア形式で `uint32_t` 配列をリアルタイム生成。
-- **WAV書き出し**: ブラウザ内で 44.1kHz モノラル WAV ファイルとしてレンダリング・ダウンロード可能。
-- **ピッチ管理**: C4（音楽的なC8 = 4186Hz相当）を基準とした対称スケールと、一括オクターブ・シフト機能。
-- **プロジェクト管理**: ブラウザのLocal Storageによる自動保存、およびJSON形式でのインポート/エクスポート。
-
-### 使い方
+### 使い方 / Getting Started
 
 1.  **クローン**: `git clone https://github.com/sac-inoue/BeepDesigner.git`
 2.  **インストール**: `npm install`
 3.  **起動**: `npm run dev`
-4.  **編集**: `http://localhost:5173/` を開き、サイドバーでパターンを追加してメロディを作成してください。
+4.  **編集**: `http://localhost:5173/` を開き、ビープ音の設計を開始する。
 
----
-
-## Tech Stack
+### Tech Stack
 
 - **Frontend**: React 18, TypeScript, Vite
 - **Styling**: Tailwind CSS
 - **Audio Context**: Web Audio API
-- **State Management**: React Hooks (useState, useEffect, etc.)
 
 ## License
 
-MIT License (or customized by user)
+MIT License
