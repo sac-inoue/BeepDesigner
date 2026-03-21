@@ -6,7 +6,7 @@ A high-performance web-based sound design tool for microcontrollers (e.g., ESP32
 
 ---
 
-[日本語のREADMEはこちら (README.jp)](README.jp)
+[日本語のREADMEはこちら (readme_jp.md)](readme_jp.md)
 
 ---
 
