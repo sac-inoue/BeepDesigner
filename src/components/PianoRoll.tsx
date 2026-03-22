@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { GRID_MS, getScale } from '../types';
-import type { Beep, Note } from '../types';
+import type { Beep, Note, NoteEntry } from '../types';
 
 let globalAudioCtx: AudioContext | null = null;
 
@@ -69,27 +69,69 @@ interface PianoRollProps {
   isDirty?: boolean;
 }
 
+const PianoRollGrid = React.memo(({ 
+  scale, 
+  totalCells, 
+  notes, 
+  handleMouseDown, 
+  handleMouseEnter 
+}: { 
+  scale: NoteEntry[], 
+  totalCells: number, 
+  notes: Note[],
+  handleMouseDown: (colIndex: number, freq: number, isActive: boolean) => void,
+  handleMouseEnter: (colIndex: number, freq: number) => void
+}) => {
+  return (
+    <div 
+      className="absolute left-20 top-0 h-full"
+      style={{ display: 'grid', gridTemplateColumns: `repeat(${totalCells}, 24px)`, gridTemplateRows: `repeat(${scale.length}, 24px)` }}
+    >
+      {scale.map((s) => (
+        Array.from({ length: totalCells }).map((_, colIndex) => {
+          const startMs = colIndex * GRID_MS;
+          const note = notes.find(n => Math.abs(n.startMs - startMs) < 0.1);
+          const isActive = note && Math.abs(note.freq - s.freq) < 1;
+
+          return (
+            <div 
+              key={`${s.index}-${colIndex}`}
+              className={`relative border-r border-b border-gray-900/40 cursor-crosshair ${s.name.includes('#') ? 'bg-gray-950/40' : 'bg-transparent'} hover:bg-blue-500/10`}
+              onMouseDown={(e) => { e.preventDefault(); handleMouseDown(colIndex, s.freq, !!isActive); }}
+              onMouseEnter={() => handleMouseEnter(colIndex, s.freq)}
+            >
+              {isActive && <div className="absolute inset-0 bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.6)] z-10 rounded-sm border border-blue-400/50" />}
+            </div>
+          );
+        })
+      ))}
+    </div>
+  );
+});
+
 const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, onSave, onDiscard, isDirty }) => {
   const scale = useMemo(() => getScale(), []);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
   const animationRef = useRef<number | null>(null);
   const activeOscillatorsRef = useRef<OscillatorNode[]>([]);
+  const cursorRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const wavInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const countdownOverlayRef = useRef<HTMLDivElement>(null);
   const [dragMode, setDragMode] = useState<'add' | 'remove' | null>(null);
 
   // Mic Recording State
   const [isRecordingMic, setIsRecordingMic] = useState(false);
   const [isRecordingKey, setIsRecordingKey] = useState(false);
   const [isKeyPlaying, setIsKeyPlaying] = useState(false);
-  const [pressedKeys, setPressedKeys] = useState<Set<string>>(new Set());
+  const [useMetronome, setUseMetronome] = useState(true);
   const [micProgress, setMicProgress] = useState(0); 
   const [micSpeed, setMicSpeed] = useState(1); // 1x, 2x, 3x
   const [micCountdown, setMicCountdown] = useState<number | null>(null);
   const micCountdownRef = useRef<number | null>(null);
   const micIntervalRef = useRef<number | null>(null);
+  const [activeScaleIndices, setActiveScaleIndices] = useState<Set<number>>(new Set());
   const recordedFrequenciesRef = useRef<number[]>([]);
 
   const KEY_MAP: Record<string, number> = {
@@ -97,14 +139,57 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     'KeyK': 12, 'KeyO': 13, 'KeyL': 14, 'KeyP': 15, 'Semicolon': 16, 'Quote': 17
   };
 
-  const currentFreqFromKeys = useMemo(() => {
-    if (pressedKeys.size === 0) return 0;
-    // Get the latest pressed key (or highest index)
-    const sorted = Array.from(pressedKeys).sort((a, b) => (KEY_MAP[b] || 0) - (KEY_MAP[a] || 0));
+  const kbOscRef = useRef<OscillatorNode | null>(null);
+  const kbGainRef = useRef<GainNode | null>(null);
+  const pressedKeysRef = useRef<Set<string>>(new Set());
+  const currentKeyFreqRef = useRef<number>(0);
+
+  const calculateFreqFromKeys = () => {
+    if (pressedKeysRef.current.size === 0) return 0;
+    const sorted = Array.from(pressedKeysRef.current).sort((a, b) => (KEY_MAP[b] || 0) - (KEY_MAP[a] || 0));
     const index = KEY_MAP[sorted[0]];
-    const baseScaleFreq = scale.find(s => s.index === 0)?.freq || 4186;
-    return Math.round(baseScaleFreq * Math.pow(2, index / 12));
-  }, [pressedKeys, scale]);
+    return scale.find(s => s.index === index)?.freq || 0;
+  };
+
+  const updateKeyboardSound = () => {
+    const freq = calculateFreqFromKeys();
+    const ctx = getGlobalAudioCtx();
+    
+    if (freq > 0) {
+      if (!kbOscRef.current) {
+        if (ctx.state === 'suspended') ctx.resume();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(freq, ctx.currentTime);
+        gain.gain.setValueAtTime(0, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 0.005);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        kbOscRef.current = osc;
+        kbGainRef.current = gain;
+      } else {
+        kbOscRef.current.frequency.setTargetAtTime(freq, ctx.currentTime, 0.005);
+      }
+    } else {
+      if (kbOscRef.current && kbGainRef.current) {
+        const osc = kbOscRef.current;
+        const gain = kbGainRef.current;
+        const now = ctx.currentTime;
+        gain.gain.setTargetAtTime(0, now, 0.015);
+        setTimeout(() => {
+           try {
+             osc.stop();
+             osc.disconnect();
+             gain.disconnect();
+           } catch (e) {}
+        }, 100);
+        kbOscRef.current = null;
+        kbGainRef.current = null;
+      }
+    }
+  };
 
   const REVERSE_KEY_MAP = useMemo(() => {
     const map: Record<number, string> = {};
@@ -122,26 +207,27 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
       if (e.repeat) return;
       if (e.target instanceof HTMLInputElement) return;
       
-      if (KEY_MAP[e.code] !== undefined) {
-        setPressedKeys(prev => {
-          const next = new Set(prev);
-          next.add(e.code);
-          return next;
-        });
-        const index = KEY_MAP[e.code];
-        const baseScaleFreq = scale.find(s => s.index === 0)?.freq || 4186;
-        const freq = Math.round(baseScaleFreq * Math.pow(2, index / 12));
-        playNote(freq, 0.2);
+      const index = KEY_MAP[e.code];
+      if (index !== undefined) {
+        pressedKeysRef.current.add(e.code);
+        currentKeyFreqRef.current = calculateFreqFromKeys();
+        
+        // Update visual feedback
+        setActiveScaleIndices(new Set(Array.from(pressedKeysRef.current).map(k => KEY_MAP[k])));
+        updateKeyboardSound();
+
+        e.preventDefault();
       }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
       if (KEY_MAP[e.code] !== undefined) {
-        setPressedKeys(prev => {
-          const next = new Set(prev);
-          next.delete(e.code);
-          return next;
-        });
+        pressedKeysRef.current.delete(e.code);
+        currentKeyFreqRef.current = calculateFreqFromKeys();
+        
+        // Update visual feedback
+        setActiveScaleIndices(new Set(Array.from(pressedKeysRef.current).map(k => KEY_MAP[k])));
+        updateKeyboardSound();
       }
     };
 
@@ -153,13 +239,72 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      
+      // Clean up sustained note
+      if (kbOscRef.current && kbGainRef.current) {
+        try {
+          kbOscRef.current.stop();
+          kbOscRef.current.disconnect();
+          kbGainRef.current.disconnect();
+        } catch (e) {}
+        kbOscRef.current = null;
+        kbGainRef.current = null;
+      }
     };
   }, [isKeyPlaying, isRecordingKey, scale]);
 
-  const currentKeyFreqRef = useRef<number>(0);
   useEffect(() => {
-    currentKeyFreqRef.current = currentFreqFromKeys;
-  }, [currentFreqFromKeys]);
+    const handleSpaceToggle = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        if (e.target instanceof HTMLInputElement) return;
+        if (isRecordingMic || isRecordingKey || micCountdown !== null) return;
+        
+        e.preventDefault();
+        startPlayback();
+      }
+    };
+    window.addEventListener('keydown', handleSpaceToggle);
+    return () => window.removeEventListener('keydown', handleSpaceToggle);
+  }, [isPlaying, isRecordingMic, isRecordingKey, micCountdown, beep]);
+
+  const metronomeOscsRef = useRef<OscillatorNode[]>([]);
+
+  const stopMetronome = () => {
+    metronomeOscsRef.current.forEach(osc => {
+      try { osc.stop(); osc.disconnect(); } catch (e) {}
+    });
+    metronomeOscsRef.current = [];
+  };
+
+  const scheduleMetronome = (ctx: AudioContext, countdownSec: number, recordDurationSec: number) => {
+    stopMetronome();
+    if (!useMetronome) return;
+
+    const startTime = ctx.currentTime;
+    const totalSec = countdownSec + recordDurationSec;
+    const interval = 0.25; // 250ms
+    
+    for (let t = 0; t < totalSec + 0.01; t += interval) {
+      const isHigh = Math.abs(t % 1.0) < 0.01; // High every 1s (4 beats)
+      
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(isHigh ? 1000 : 800, startTime + t);
+      
+      gain.gain.setValueAtTime(0, startTime + t);
+      gain.gain.linearRampToValueAtTime(0.1, startTime + t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + t + 0.05);
+      
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      
+      osc.start(startTime + t);
+      osc.stop(startTime + t + 0.05);
+      metronomeOscsRef.current.push(osc);
+    }
+  };
 
   const totalCells = (beep.durationSec * 1000) / GRID_MS;
 
@@ -175,11 +320,10 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     const now = ctx.currentTime;
     osc.frequency.setValueAtTime(freq, now);
     
-    // Safari-safe envelope targeting 'now' accurately
-    gain.gain.value = 0;
+    // Snappier attack
     gain.gain.setValueAtTime(0, now);
-    gain.gain.setTargetAtTime(0.2, now, 0.01);
-    gain.gain.setTargetAtTime(0, now + duration - 0.01, 0.01);
+    gain.gain.linearRampToValueAtTime(0.2, now + 0.005);
+    gain.gain.setTargetAtTime(0, now + duration - 0.04, 0.01);
     
     osc.connect(gain);
     gain.connect(ctx.destination);
@@ -203,22 +347,32 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
 
   const applyTool = (cellIndex: number, freq: number, mode: 'add' | 'remove') => {
     const startMs = cellIndex * GRID_MS;
-    const existingNote = beep.notes.find(n => n.startMs === startMs);
+    const existingNote = beep.notes.find(n => Math.abs(n.startMs - startMs) < 0.1);
     
     let newNotes = [...beep.notes];
     if (mode === 'add') {
-      if (existingNote && existingNote.freq === freq) return;
-      newNotes = newNotes.filter(n => n.startMs !== startMs);
+      if (existingNote && Math.abs(existingNote.freq - freq) < 1) return;
+      newNotes = newNotes.filter(n => Math.abs(n.startMs - startMs) >= 0.1);
       newNotes.push({ freq, durationMs: GRID_MS, startMs });
       playNote(freq, 0.05);
     } else {
-      if (existingNote && existingNote.freq === freq) {
-        newNotes = newNotes.filter(n => n.startMs !== startMs);
+      if (existingNote && Math.abs(existingNote.freq - freq) < 1) {
+        newNotes = newNotes.filter(n => Math.abs(n.startMs - startMs) >= 0.1);
       }
     }
     
     if (JSON.stringify(newNotes) !== JSON.stringify(beep.notes)) {
-      onUpdate({ ...beep, notes: newNotes });
+      // Ensure absolute monophony during any update
+      const seen = new Set<string>();
+      const cleanNotes = newNotes
+        .filter(n => {
+          const timeKey = Math.round(n.startMs * 100).toString();
+          if (seen.has(timeKey)) return false;
+          seen.add(timeKey);
+          return true;
+        });
+        
+      onUpdate({ ...beep, notes: cleanNotes });
     }
   };
 
@@ -307,11 +461,17 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
       const elapsed = performance.now() - uiStartPerfTime - (schedulingOffset * 1000);
       const totalDuration = beep.durationSec * 1000;
       
+      const val = elapsed < 0 ? 0 : elapsed;
+      if (cursorRef.current) {
+        const left = (val / GRID_MS) * 24;
+        cursorRef.current.style.transform = `translateX(${left}px)`;
+        cursorRef.current.style.display = 'block';
+      }
+
       if (elapsed >= totalDuration) {
         stopPlayback();
         return;
       }
-      setCurrentTime(elapsed < 0 ? 0 : elapsed);
       animationRef.current = requestAnimationFrame(updateProgress);
     };
     animationRef.current = requestAnimationFrame(updateProgress);
@@ -319,7 +479,11 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
 
   const stopPlayback = () => {
     setIsPlaying(false);
-    setCurrentTime(0);
+    if (cursorRef.current) {
+      cursorRef.current.style.display = 'none';
+      cursorRef.current.style.transform = 'translateX(0)';
+    }
+
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
     
     activeOscillatorsRef.current.forEach(osc => {
@@ -352,13 +516,16 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
 
   const startMicRecording = async (isKey: boolean = false) => {
     try {
+      const ctx = getGlobalAudioCtx();
+      if (ctx.state === 'suspended') await ctx.resume();
+
       if (isKey) {
         setIsKeyPlaying(true);
         setIsRecordingKey(true);
+        scheduleMetronome(ctx, 2, beep.durationSec);
       } else {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const ctx = getGlobalAudioCtx();
-        if (ctx.state === 'suspended') await ctx.resume();
+        scheduleMetronome(ctx, 2, beep.durationSec * micSpeed);
         beginRecording(stream, ctx);
       }
 
@@ -376,87 +543,114 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
 
   const beginRecording = (stream: MediaStream, ctx: AudioContext) => {
     // Start Countdown
-    let count = 3;
+    let count = 2;
     setMicCountdown(count);
     micCountdownRef.current = count;
     
+    recordedFrequenciesRef.current = [];
+
     const countInterval = window.setInterval(() => {
       count--;
-      micCountdownRef.current = count;
-      if (count === 0) {
+      if (count === 1) {
+        startMicLoop(stream, ctx, true); // Silent pre-recording
+      }
+      if (count <= 0) {
         clearInterval(countInterval);
+        if (countdownOverlayRef.current) countdownOverlayRef.current.style.display = 'none';
         setMicCountdown(null);
         micCountdownRef.current = null;
-        startMicLoop(stream, ctx);
+        setIsRecordingMic(true);
       } else {
         setMicCountdown(count);
+        micCountdownRef.current = count;
       }
     }, 1000);
   };
 
-  const startMicLoop = (stream: MediaStream, ctx: AudioContext) => {
+  const startMicLoop = (stream: MediaStream, ctx: AudioContext, isPre: boolean = false) => {
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
     source.connect(analyser);
 
     const buffer = new Float32Array(analyser.fftSize);
-    recordedFrequenciesRef.current = [];
+    if (isPre) recordedFrequenciesRef.current = [];
     setMicProgress(0);
-    setIsRecordingMic(true);
+    if (!isPre) setIsRecordingMic(true);
 
     const baseSteps = totalCells * micSpeed;
+    const preSteps = Math.floor(1000 / GRID_MS) * micSpeed;
     let step = 0;
 
-    micIntervalRef.current = window.setInterval(() => {
+    const recordStep = () => {
       analyser.getFloatTimeDomainData(buffer);
       const freq = autoCorrelate(buffer, ctx.sampleRate);
       recordedFrequenciesRef.current.push(freq > 0 ? freq : 0);
       
-      step++;
-      setMicProgress((step / baseSteps) * 100);
-
-      if (step >= baseSteps) {
-        stopRecording(stream);
+      // Only update UI if micCountdown is null (meaning recording has officially started)
+      if (micCountdownRef.current === null || micCountdownRef.current === 0) {
+        step++;
+        setMicProgress((step / baseSteps) * 100);
+        if (step >= baseSteps) {
+          stopRecording(stream);
+        }
+      } else if (recordedFrequenciesRef.current.length >= baseSteps + preSteps) {
+          // Safety stop if countdown gets stuck
+          stopRecording(stream);
       }
-    }, GRID_MS);
+    };
+
+    micIntervalRef.current = window.setInterval(recordStep, GRID_MS);
   };
 
   const beginKeyRecording = () => {
-    let count = 3;
+    let count = 2;
     setMicCountdown(count);
     micCountdownRef.current = count;
     
+    recordedFrequenciesRef.current = [];
+
     const countInterval = window.setInterval(() => {
       count--;
-      micCountdownRef.current = count;
-      if (count === 0) {
+      if (count === 1) {
+        startKeyLoop(true); // Silent pre-recording
+      }
+      if (count <= 0) {
         clearInterval(countInterval);
+        if (countdownOverlayRef.current) countdownOverlayRef.current.style.display = 'none';
         setMicCountdown(null);
         micCountdownRef.current = null;
-        startKeyLoop();
+        setIsRecordingKey(true);
       } else {
         setMicCountdown(count);
+        micCountdownRef.current = count;
       }
     }, 1000);
   };
 
-  const startKeyLoop = () => {
-    recordedFrequenciesRef.current = [];
+  const startKeyLoop = (isPre: boolean = false) => {
+    if (isPre) recordedFrequenciesRef.current = [];
     setMicProgress(0);
-    setIsRecordingKey(true);
+    if (!isPre) setIsRecordingKey(true);
 
+    const preSteps = Math.floor(1000 / GRID_MS);
     let step = 0;
-    micIntervalRef.current = window.setInterval(() => {
+    
+    const recordStep = () => {
       recordedFrequenciesRef.current.push(currentKeyFreqRef.current);
       
-      step++;
-      setMicProgress((step / totalCells) * 100);
-
-      if (step >= totalCells) {
-        stopRecording();
+      if (micCountdownRef.current === null || micCountdownRef.current === 0) {
+        step++;
+        setMicProgress((step / totalCells) * 100);
+        if (step >= totalCells) {
+          stopRecording();
+        }
+      } else if (recordedFrequenciesRef.current.length >= totalCells + preSteps) {
+          stopRecording();
       }
-    }, GRID_MS);
+    };
+
+    micIntervalRef.current = window.setInterval(recordStep, GRID_MS);
   };
 
   const stopRecording = (stream?: MediaStream) => {
@@ -465,6 +659,8 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
       micIntervalRef.current = null;
     }
     if (stream) stream.getTracks().forEach(t => t.stop());
+    
+    stopMetronome();
     
     const speed = isRecordingMic ? micSpeed : 1;
     processRecordedNotes(recordedFrequenciesRef.current, speed);
@@ -524,12 +720,12 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     // Take current duration worth of frequencies starting from first sound
     const rawFreqs = allRawFreqs.slice(firstSoundIdx, firstSoundIdx + (totalCells * speed));
 
-    // Downsample (Average/Pick in window of micSpeed)
+    // Downsample (Average/Pick in window)
     const processedFreqs: number[] = [];
     for (let i = 0; i < totalCells; i++) {
-        const window = rawFreqs.slice(i * micSpeed, (i + 1) * micSpeed);
+        const window = rawFreqs.slice(i * speed, (i + 1) * speed);
         const validPitches = window.filter(f => f > 0);
-        if (validPitches.length > (micSpeed / (micSpeed === 1 ? 2 : 3))) { // More lenient for slow rec
+        if (validPitches.length > (speed / (speed === 1 ? 2 : 3))) { 
             const avg = validPitches.reduce((a, b) => a + b, 0) / validPitches.length;
             processedFreqs.push(avg);
         } else {
@@ -537,19 +733,12 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
         }
     }
 
-    // Find reference pitch from first sound
-    const firstValidFreq = processedFreqs.find(f => f > 0);
-    if (!firstValidFreq) return;
-
-    const baseScaleFreq = scale.find(s => s.index === 0)?.freq || 4186;
     const newNotes: Note[] = [];
-
     processedFreqs.forEach((f, i) => {
       if (f > 0) {
-        const interval = 12 * Math.log2(f / firstValidFreq);
-        const targetFreq = Math.round(baseScaleFreq * Math.pow(2, Math.round(interval) / 12));
+        // Direct matching to the accurate scale
         const nearest = scale.reduce((prev, curr) => 
-            Math.abs(curr.freq - targetFreq) < Math.abs(prev.freq - targetFreq) ? curr : prev
+            Math.abs(curr.freq - f) < Math.abs(prev.freq - f) ? curr : prev
         );
 
         newNotes.push({
@@ -588,7 +777,7 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
           <input 
             type="text"
             value={beep.name}
-            onChange={e => onUpdate({...beep, name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '')})}
+            onChange={e => onUpdate({...beep, name: e.target.value})}
             className="bg-gray-950 border border-gray-800 focus:border-blue-500/50 outline-none rounded-lg px-3 py-2 text-sm text-blue-400 font-mono w-32 lg:w-48 transition-all"
           />
         </div>
@@ -626,6 +815,13 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
                >
                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 000 2h6a1 1 0 100-2H7z" clipRule="evenodd" /></svg>
                  <span>{isRecordingKey ? 'STOP' : (micCountdown !== null && isRecordingKey ? `...` : 'KEY REC')}</span>
+               </button>
+               <button 
+                 onClick={() => setUseMetronome(!useMetronome)}
+                 title="Metronome Toggle"
+                 className={`px-2 py-1.5 rounded-md transition-all ${useMetronome ? 'text-blue-400' : 'text-gray-600'}`}
+               >
+                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                </button>
             </div>
 
@@ -729,17 +925,29 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
 
       <div className="relative border border-gray-800 rounded-xl overflow-hidden shadow-2xl bg-gray-950 flex-1 flex flex-col">
         {/* Recording Progress Overlay */}
-        {(isRecordingMic || micCountdown !== null) && (
-          <div className="absolute top-0 left-0 right-0 z-50 h-1 bg-gray-800">
+        {(isRecordingMic || isRecordingKey || micCountdown !== null) && (
+          <div className="absolute top-0 left-0 right-0 z-50 h-1 bg-gray-900 border-b border-gray-800">
             <div 
-              className={`h-full ${micCountdown !== null ? 'bg-indigo-500' : 'bg-red-500'} shadow-[0_0_10px_currentColor] transition-all duration-300`} 
-              style={{ width: micCountdown !== null ? '100%' : `${micProgress}%` }}
+              className={`h-full ${micCountdown !== null ? 'bg-indigo-500' : 'bg-red-500'} shadow-[0_0_10px_currentColor] transition-all`} 
+              style={{ 
+                width: micCountdown !== null ? '100%' : `${micProgress}%`,
+                transitionDuration: `${GRID_MS}ms`
+              }} 
             />
+          </div>
+        )}
+
+        {(isRecordingMic || isRecordingKey || (micCountdown !== null && isKeyPlaying)) && (
+          <div className="absolute inset-0 z-40 pointer-events-none border-[6px] border-red-500/10 animate-[pulse_0.25s_infinite] flex items-start justify-end p-4">
+             <div className="flex items-center space-x-2 bg-red-600/20 px-3 py-1.5 rounded-full border border-red-600/30 backdrop-blur-sm shadow-[0_0_15px_rgba(239,68,68,0.2)]">
+                <div className="w-2 h-2 bg-red-500 rounded-full animate-ping" />
+                <span className="text-red-500 font-black text-[10px] tracking-widest uppercase italic">{micCountdown !== null ? `GET READY` : 'BEAT REC'}</span>
+             </div>
           </div>
         )}
         
         {micCountdown !== null && (
-          <div className="absolute inset-0 z-40 bg-gray-900/40 backdrop-blur-sm flex items-center justify-center">
+          <div ref={countdownOverlayRef} className="absolute inset-0 z-40 bg-gray-900/40 backdrop-blur-sm flex items-center justify-center">
             <div className="text-8xl font-black text-white animate-ping drop-shadow-2xl">
               {micCountdown}
             </div>
@@ -747,55 +955,59 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
         )}
         
         <div className="relative flex-1 overflow-auto scroll-smooth custom-scrollbar" ref={containerRef}>
-          <div className="relative" style={{ width: `${totalCells * 40 + 80}px`, height: `${scale.length * 24}px` }}>
+          <div className="relative" style={{ width: `${totalCells * 24 + 80}px`, height: `${scale.length * 24}px` }}>
             <div className="sticky left-0 top-0 z-20 w-20 bg-gray-950/95 border-r border-gray-800 h-full flex flex-col backdrop-blur-sm">
-              {scale.map((s) => (
-                <div key={s.index} className={`h-[24px] flex items-center justify-between px-3 text-[9px] font-mono border-b border-gray-900/50 ${s.name.includes('#') ? 'bg-gray-900/40 text-gray-600' : 'text-gray-400'}`}>
-                  <span className="truncate mr-1">{s.name}{s.octave}</span>
-                  {REVERSE_KEY_MAP[s.index] && <span className="text-blue-600 font-bold bg-blue-500/10 px-0.5 rounded border border-blue-500/20">{REVERSE_KEY_MAP[s.index]}</span>}
-                </div>
-              ))}
+              {scale.map((s) => {
+                const isActive = activeScaleIndices.has(s.index);
+                return (
+                  <div 
+                    key={s.index} 
+                    className={`h-[24px] flex items-center justify-between px-3 text-[9px] font-mono border-b border-gray-900/50 transition-colors ${
+                      isActive 
+                        ? 'bg-blue-600/30 text-white shadow-[inset_0_0_10px_rgba(59,130,246,0.3)]' 
+                        : (s.name.includes('#') ? 'bg-gray-900/40 text-gray-600' : 'text-gray-400')
+                    }`}
+                  >
+                    <span className={`truncate mr-1 ${isActive ? 'font-black scale-110 origin-left transition-transform' : ''}`}>
+                      {s.name}{s.octave}
+                    </span>
+                    {REVERSE_KEY_MAP[s.index] && (
+                      <span className={`transition-all ${
+                        isActive 
+                          ? 'text-white bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]' 
+                          : 'text-blue-600/80 bg-blue-500/10'
+                        } font-bold px-0.5 rounded border border-blue-500/20`}
+                      >
+                        {REVERSE_KEY_MAP[s.index]}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
+            <PianoRollGrid 
+              scale={scale}
+              totalCells={totalCells}
+              notes={beep.notes}
+              handleMouseDown={handleMouseDown}
+              handleMouseEnter={handleMouseEnter}
+            />
+            
             <div 
-              className="absolute left-20 top-0 h-full"
-              style={{ display: 'grid', gridTemplateColumns: `repeat(${totalCells}, 40px)`, gridTemplateRows: `repeat(${scale.length}, 24px)` }}
-            >
-              {scale.map((s, rowIndex) => (
-                Array.from({ length: totalCells }).map((_, colIndex) => {
-                  const startMs = colIndex * GRID_MS;
-                  const note = beep.notes.find(n => n.startMs === startMs);
-                  const isActive = note && Math.abs(note.freq - s.freq) < 1;
-                  const isOtherActive = note && !isActive;
-
-                  return (
-                    <div 
-                      key={`${rowIndex}-${colIndex}`}
-                      className={`border-r border-b border-gray-900/30 transition-colors relative ${s.name.includes('#') ? 'bg-gray-900/20' : ''} ${colIndex % 4 === 0 ? 'border-l-[1.5px] border-l-gray-800/50' : ''}`}
-                      onMouseDown={() => handleMouseDown(colIndex, s.freq, !!isActive)}
-                      onMouseEnter={() => handleMouseEnter(colIndex, s.freq)}
-                    >
-                      {isActive && <div className="absolute inset-0 bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.6)] z-10 rounded-sm border border-blue-400/50" />}
-                      {isOtherActive && <div className="absolute inset-0 bg-gray-800/30" />}
-                    </div>
-                  );
-                })
-              ))}
-              
-              {isPlaying && (
-                <div className="absolute top-0 bottom-0 w-0.5 bg-yellow-400 shadow-[0_0_10px_#facc15] z-30 pointer-events-none" style={{ left: `${(currentTime / GRID_MS) * 40}px` }} />
-              )}
-            </div>
+              ref={cursorRef}
+              className="absolute top-0 bottom-0 w-0.5 bg-yellow-400 shadow-[0_0_10px_#facc15] z-30 pointer-events-none hidden will-change-transform" 
+            />
           </div>
         </div>
-      </div>
 
-      <div className="mt-4 flex items-center justify-between text-gray-500 font-mono text-[10px] uppercase tracking-wider">
-          <div className="flex space-x-8">
-            <div className="flex items-center space-x-2"><div className="w-2 h-2 bg-blue-500 rounded-sm" /><span>Note</span></div>
-            <div className="flex items-center space-x-2"><div className="w-2 h-2 bg-gray-800 rounded-sm" /><span>Empty</span></div>
-          </div>
-          <div>1 Grid = {GRID_MS}ms (1/16s)</div>
+        <div className="mt-4 flex items-center justify-between text-gray-500 font-mono text-[10px] uppercase tracking-wider">
+            <div className="flex space-x-8">
+              <div className="flex items-center space-x-2"><div className="w-2 h-2 bg-blue-500 rounded-sm" /><span>Note</span></div>
+              <div className="flex items-center space-x-2"><div className="w-2 h-2 bg-gray-800 rounded-sm" /><span>Empty</span></div>
+            </div>
+            <div>1 Grid = {GRID_MS}ms (1/32s)</div>
+        </div>
       </div>
     </div>
   );

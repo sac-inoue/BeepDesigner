@@ -19,10 +19,10 @@ export interface Project {
 }
 
 // grid unit (16th note equivalent)
-export const GRID_MS = 62.5;
+export const GRID_MS = 31.25;
 
-// Base frequency (C4, but mapped to musical C8 standard)
-export const BASE_FREQ = 4186;
+// Base frequency (C4)
+export const BASE_FREQ = 261.6256;
 
 // Note Names
 export const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];

@@ -70,6 +70,32 @@ const App: React.FC = () => {
   const currentSavedBeep = project.beeps.find(b => b.id === currentBeepId);
   const isDirty = !!workingBeep && !!currentSavedBeep && JSON.stringify(workingBeep) !== JSON.stringify(currentSavedBeep);
 
+  // Warn about unsaved changes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
+  // Lock history to prevent accidental navigation
+  useEffect(() => {
+    // Initial dummy state
+    window.history.pushState(null, '', window.location.href);
+    
+    const handlePopState = () => {
+      // Re-push state to stay on current page
+      window.history.pushState(null, '', window.location.href);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   const updateBeep = (updatedBeep: Beep) => {
     setWorkingBeep(updatedBeep);
   };
@@ -96,11 +122,12 @@ const App: React.FC = () => {
     let nextProject = project;
     
     if (isDirty) {
-      if (window.confirm("保存されていない変更があります。保存してから切り替えますか？\n\n[OK] キャンセルせず保存して切り替え\n[キャンセル] 変更を破棄して切り替え")) {
-        const savedWorking = { ...workingBeep!, lastUpdatedAt: Date.now() };
-        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? savedWorking : b) };
-        setProject(nextProject);
+      if (!window.confirm("You have unsaved changes. Save before switching?")) {
+        return; // Abort switching
       }
+      const savedWorking = { ...workingBeep!, lastUpdatedAt: Date.now() };
+      nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? savedWorking : b) };
+      setProject(nextProject);
     }
     
     setCurrentBeepId(id);
@@ -112,10 +139,11 @@ const App: React.FC = () => {
   const addBeep = () => {
     let nextProject = project;
     if (isDirty) {
-      if (window.confirm("保存されていない変更があります。保存しますか？\n\n[OK] 保存して新しいパターン作成\n[キャンセル] 変更を破棄して新しいパターン作成")) {
-        const savedWorking = { ...workingBeep!, lastUpdatedAt: Date.now() };
-        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? savedWorking : b) };
+      if (!window.confirm("You have unsaved changes. Save now?")) {
+        return; // Abort adding
       }
+      const savedWorking = { ...workingBeep!, lastUpdatedAt: Date.now() };
+      nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? savedWorking : b) };
     }
 
     const newBeep: Beep = {
@@ -137,10 +165,11 @@ const App: React.FC = () => {
     
     let nextProject = project;
     if (isDirty) {
-      if (window.confirm("保存されていない変更があります。保存してから複製しますか？\n\n[OK] 保存して複製\n[キャンセル] 変更を破棄して複製")) {
-        const savedWorking = { ...workingBeep!, lastUpdatedAt: Date.now() };
-        nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? savedWorking : b) };
+      if (!window.confirm("You have unsaved changes. Save before duplicating?")) {
+        return; // Abort duplicating
       }
+      const savedWorking = { ...workingBeep!, lastUpdatedAt: Date.now() };
+      nextProject = { ...project, beeps: project.beeps.map(b => b.id === workingBeep!.id ? savedWorking : b) };
     }
 
     const copy: Beep = {
@@ -156,11 +185,25 @@ const App: React.FC = () => {
   };
 
   const deleteBeep = (id: string) => {
-    if (project.beeps.length <= 1) return;
     const isDeletingCurrent = id === currentBeepId;
 
     if (isDeletingCurrent && isDirty) {
-      if (!window.confirm("未保存の変更があります。本当にこのパターンを削除しますか？")) return;
+      if (!window.confirm("You have unsaved changes. Are you sure you want to delete this pattern?")) return;
+    }
+
+    if (project.beeps.length <= 1) {
+      if (!window.confirm("This is the last pattern. Delete and reset to a new one?")) return;
+      const freshBeep: Beep = {
+        id: crypto.randomUUID(),
+        name: 'new_sound_1',
+        durationSec: 1,
+        notes: [],
+        lastUpdatedAt: Date.now()
+      };
+      setProject(prev => ({ ...prev, beeps: [freshBeep] }));
+      setCurrentBeepId(freshBeep.id);
+      setWorkingBeep(JSON.parse(JSON.stringify(freshBeep)));
+      return;
     }
 
     const nextBeeps = project.beeps.filter(b => b.id !== id);
@@ -176,13 +219,12 @@ const App: React.FC = () => {
   };
 
   const updateBeepName = (id: string, name: string) => {
-    const safeName = name.replace(/[^a-zA-Z0-9_]/g, '');
     setProject(prev => ({
       ...prev,
-      beeps: prev.beeps.map(b => b.id === id ? { ...b, name: safeName, lastUpdatedAt: Date.now() } : b)
+      beeps: prev.beeps.map(b => b.id === id ? { ...b, name, lastUpdatedAt: Date.now() } : b)
     }));
     if (id === currentBeepId && workingBeep) {
-      setWorkingBeep(prev => prev ? { ...prev, name: safeName, lastUpdatedAt: Date.now() } : prev);
+      setWorkingBeep(prev => prev ? { ...prev, name, lastUpdatedAt: Date.now() } : prev);
     }
   };
 
@@ -221,6 +263,7 @@ const App: React.FC = () => {
         setProject(imported);
         if (imported.beeps.length > 0) {
           setCurrentBeepId(imported.beeps[0].id);
+          setWorkingBeep(JSON.parse(JSON.stringify(imported.beeps[0])));
         }
       } catch (err) {
         alert("Invalid project file");

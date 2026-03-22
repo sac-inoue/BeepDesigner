@@ -25,7 +25,7 @@ const Sidebar: React.FC<{
         <div 
           key={beep.id}
           onClick={() => onSelectBeep(beep.id)}
-          className={`group flex items-center justify-between p-1.5 rounded cursor-pointer transition-all border ${
+          className={`group flex items-center justify-between p-1.5 rounded cursor-pointer border ${
             currentBeepId === beep.id 
               ? 'bg-blue-500/10 border-blue-500/30 text-blue-400 font-bold' 
               : 'hover:bg-gray-800/50 border-transparent text-gray-400'
