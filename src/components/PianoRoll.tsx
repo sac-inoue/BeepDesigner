@@ -82,6 +82,9 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
 
   // Mic Recording State
   const [isRecordingMic, setIsRecordingMic] = useState(false);
+  const [isRecordingKey, setIsRecordingKey] = useState(false);
+  const [isKeyPlaying, setIsKeyPlaying] = useState(false);
+  const [pressedKeys, setPressedKeys] = useState<Set<string>>(new Set());
   const [micProgress, setMicProgress] = useState(0); 
   const [micSpeed, setMicSpeed] = useState(1); // 1x, 2x, 3x
   const [micCountdown, setMicCountdown] = useState<number | null>(null);
@@ -89,10 +92,71 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
   const micIntervalRef = useRef<number | null>(null);
   const recordedFrequenciesRef = useRef<number[]>([]);
 
-  const totalCells = (beep.durationSec * 1000) / GRID_MS;
+  const KEY_MAP: Record<string, number> = {
+    'KeyA': 0, 'KeyW': 1, 'KeyS': 2, 'KeyE': 3, 'KeyD': 4, 'KeyF': 5, 'KeyT': 6, 'KeyG': 7, 'KeyY': 8, 'KeyH': 9, 'KeyU': 10, 'KeyJ': 11,
+    'KeyK': 12, 'KeyO': 13, 'KeyL': 14, 'KeyP': 15, 'Semicolon': 16, 'Quote': 17
+  };
 
-  // Initialize Audio
-  // Removed old getAudioCtx
+  const currentFreqFromKeys = useMemo(() => {
+    if (pressedKeys.size === 0) return 0;
+    // Get the latest pressed key (or highest index)
+    const sorted = Array.from(pressedKeys).sort((a, b) => (KEY_MAP[b] || 0) - (KEY_MAP[a] || 0));
+    const index = KEY_MAP[sorted[0]];
+    const baseScaleFreq = scale.find(s => s.index === 0)?.freq || 4186;
+    return Math.round(baseScaleFreq * Math.pow(2, index / 12));
+  }, [pressedKeys, scale]);
+
+  const REVERSE_KEY_MAP = useMemo(() => {
+    const map: Record<number, string> = {};
+    Object.entries(KEY_MAP).forEach(([k, v]) => {
+      let label = k.replace('Key', '');
+      if (k === 'Semicolon') label = ';';
+      if (k === 'Quote') label = "'";
+      map[v] = label;
+    });
+    return map;
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      if (e.target instanceof HTMLInputElement) return;
+      
+      if (KEY_MAP[e.code] !== undefined) {
+        setPressedKeys(prev => {
+          const next = new Set(prev);
+          next.add(e.code);
+          return next;
+        });
+        const index = KEY_MAP[e.code];
+        const baseScaleFreq = scale.find(s => s.index === 0)?.freq || 4186;
+        const freq = Math.round(baseScaleFreq * Math.pow(2, index / 12));
+        playNote(freq, 0.2);
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (KEY_MAP[e.code] !== undefined) {
+        setPressedKeys(prev => {
+          const next = new Set(prev);
+          next.delete(e.code);
+          return next;
+        });
+      }
+    };
+
+    if (isKeyPlaying || isRecordingKey) {
+      window.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('keyup', handleKeyUp);
+    }
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [isKeyPlaying, isRecordingKey, scale]);
+
+  const totalCells = (beep.durationSec * 1000) / GRID_MS;
 
   const playNote = (freq: number, duration: number = 0.1) => {
     const ctx = getGlobalAudioCtx();
@@ -281,39 +345,51 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     }
   }, [beep.id, scale]);
 
-  const startMicRecording = async () => {
+  const startMicRecording = async (isKey: boolean = false) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const ctx = getGlobalAudioCtx();
-      if (ctx.state === 'suspended') await ctx.resume();
-      
-      // Start Countdown
-      let count = 3;
-      setMicCountdown(count);
-      
-      const countInterval = window.setInterval(() => {
-        count--;
-        micCountdownRef.current = count;
-        if (count === 1) {
-          beginRecording(stream, ctx);
-        }
-        
-        if (count === 0) {
-          clearInterval(countInterval);
-          setMicCountdown(null);
-          micCountdownRef.current = null;
-        } else {
-          setMicCountdown(count);
-        }
-      }, 1000);
+      if (isKey) {
+        setIsKeyPlaying(true);
+        setIsRecordingKey(true);
+      } else {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const ctx = getGlobalAudioCtx();
+        if (ctx.state === 'suspended') await ctx.resume();
+        beginRecording(stream, ctx);
+      }
+
+      if (isKey) {
+        beginKeyRecording();
+      }
 
     } catch (err) {
-      console.error("Mic error:", err);
-      alert("Microphone access is required.");
+      console.error("Recording error:", err);
+      alert("Required permissions were not granted.");
+      setIsRecordingMic(false);
+      setIsRecordingKey(false);
     }
   };
 
   const beginRecording = (stream: MediaStream, ctx: AudioContext) => {
+    // Start Countdown
+    let count = 3;
+    setMicCountdown(count);
+    micCountdownRef.current = count;
+    
+    const countInterval = window.setInterval(() => {
+      count--;
+      micCountdownRef.current = count;
+      if (count === 0) {
+        clearInterval(countInterval);
+        setMicCountdown(null);
+        micCountdownRef.current = null;
+        startMicLoop(stream, ctx);
+      } else {
+        setMicCountdown(count);
+      }
+    }, 1000);
+  };
+
+  const startMicLoop = (stream: MediaStream, ctx: AudioContext) => {
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
@@ -322,45 +398,74 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     const buffer = new Float32Array(analyser.fftSize);
     recordedFrequenciesRef.current = [];
     setMicProgress(0);
+    setIsRecordingMic(true);
 
-    // Record a bit more than planned to allow for silence skip
-    // Plan: pattern duration * speed + roughly 1.5s extra
     const baseSteps = totalCells * micSpeed;
-    const extraSteps = Math.floor(1500 / GRID_MS) * micSpeed; 
-    const targetSteps = baseSteps + extraSteps;
-    
     let step = 0;
-    let hasStartedUI = false;
 
     micIntervalRef.current = window.setInterval(() => {
       analyser.getFloatTimeDomainData(buffer);
       const freq = autoCorrelate(buffer, ctx.sampleRate);
       recordedFrequenciesRef.current.push(freq > 0 ? freq : 0);
       
-      // Control UI: only start showing red bar when countdown is null
-      if (micCountdownRef.current === null || micCountdownRef.current === 0) {
-        if (!hasStartedUI) {
-          setIsRecordingMic(true);
-          hasStartedUI = true;
-        }
-        step++;
-        setMicProgress((step / baseSteps) * 100);
-      }
+      step++;
+      setMicProgress((step / baseSteps) * 100);
 
-      if (step >= baseSteps || recordedFrequenciesRef.current.length >= targetSteps) {
-        stopMicRecording(stream);
+      if (step >= baseSteps) {
+        stopRecording(stream);
       }
     }, GRID_MS);
   };
 
-  const stopMicRecording = (stream?: MediaStream) => {
+  const beginKeyRecording = () => {
+    let count = 3;
+    setMicCountdown(count);
+    micCountdownRef.current = count;
+    
+    const countInterval = window.setInterval(() => {
+      count--;
+      micCountdownRef.current = count;
+      if (count === 0) {
+        clearInterval(countInterval);
+        setMicCountdown(null);
+        micCountdownRef.current = null;
+        startKeyLoop();
+      } else {
+        setMicCountdown(count);
+      }
+    }, 1000);
+  };
+
+  const startKeyLoop = () => {
+    recordedFrequenciesRef.current = [];
+    setMicProgress(0);
+    setIsRecordingKey(true);
+
+    let step = 0;
+    micIntervalRef.current = window.setInterval(() => {
+      recordedFrequenciesRef.current.push(currentFreqFromKeys);
+      
+      step++;
+      setMicProgress((step / totalCells) * 100);
+
+      if (step >= totalCells) {
+        stopRecording();
+      }
+    }, GRID_MS);
+  };
+
+  const stopRecording = (stream?: MediaStream) => {
     if (micIntervalRef.current) {
       clearInterval(micIntervalRef.current);
       micIntervalRef.current = null;
     }
     if (stream) stream.getTracks().forEach(t => t.stop());
-    processRecordedNotes(recordedFrequenciesRef.current, micSpeed);
+    
+    const speed = isRecordingMic ? micSpeed : 1;
+    processRecordedNotes(recordedFrequenciesRef.current, speed);
+    
     setIsRecordingMic(false);
+    setIsRecordingKey(false);
     setMicProgress(0);
   };
 
@@ -499,26 +604,49 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
         <div className="h-10 w-px bg-gray-800 mx-2" />
 
         <div className="flex flex-col space-y-1">
-          <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest pl-1">Live Input</span>
+          <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest pl-1">Input Method</span>
           <div className="flex items-center space-x-2">
-            <select 
-              value={micSpeed}
-              onChange={e => setMicSpeed(Number(e.target.value))}
-              className="bg-gray-950 text-[10px] border border-gray-800 outline-none rounded px-2 py-1.5 text-indigo-400 font-bold"
-              disabled={isRecordingMic || micCountdown !== null}
-            >
-              <option value={1}>1x Speed</option>
-              <option value={2}>2x Slow</option>
-              <option value={3}>3x Slow</option>
-            </select>
-            <button 
-                onClick={isRecordingMic ? () => stopMicRecording() : startMicRecording}
-                disabled={micCountdown !== null}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-bold transition-all ${isRecordingMic ? 'bg-red-500 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-500'} text-white text-xs disabled:opacity-50`}
-            >
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" /></svg>
-                <span>{isRecordingMic ? 'STOP' : (micCountdown !== null ? `IN ${micCountdown}...` : 'MIC REC')}</span>
-            </button>
+            <div className="flex bg-gray-900 p-0.5 rounded-lg border border-gray-800">
+               <button 
+                 onClick={() => setIsKeyPlaying(!isKeyPlaying)}
+                 className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md font-bold transition-all text-[10px] ${isKeyPlaying ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}
+               >
+                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
+                 <span>KEY PLAY</span>
+               </button>
+               <button 
+                 onClick={isRecordingKey ? () => stopRecording() : () => startMicRecording(true)}
+                 disabled={micCountdown !== null && !isRecordingKey}
+                 className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md font-bold transition-all text-[10px] ${isRecordingKey ? 'bg-red-500 text-white animate-pulse' : 'text-gray-500 hover:text-gray-300'}`}
+               >
+                 <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 000 2h6a1 1 0 100-2H7z" clipRule="evenodd" /></svg>
+                 <span>{isRecordingKey ? 'STOP' : (micCountdown !== null && isRecordingKey ? `...` : 'KEY REC')}</span>
+               </button>
+            </div>
+
+            <div className="w-px h-6 bg-gray-800 mx-1" />
+
+            <div className="flex items-center space-x-1 bg-gray-900 p-0.5 rounded-lg border border-gray-800">
+                <select 
+                  value={micSpeed}
+                  onChange={e => setMicSpeed(Number(e.target.value))}
+                  className="bg-transparent text-[10px] outline-none px-2 text-indigo-400 font-bold border-0"
+                  disabled={isRecordingMic || micCountdown !== null}
+                >
+                  <option value={1}>1x</option>
+                  <option value={2}>2x</option>
+                  <option value={3}>3x</option>
+                </select>
+                <button 
+                    onClick={isRecordingMic ? () => stopRecording() : () => startMicRecording(false)}
+                    disabled={micCountdown !== null && !isRecordingMic}
+                    className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md font-bold transition-all text-[10px] ${isRecordingMic ? 'bg-red-500 animate-pulse' : 'bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400'} disabled:opacity-50`}
+                >
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" /></svg>
+                    <span>{isRecordingMic ? 'STOP' : (micCountdown !== null && isRecordingMic ? `...` : 'MIC REC')}</span>
+                </button>
+            </div>
+
             <input 
               type="file" 
               accept=".wav,.mp3" 
@@ -528,10 +656,10 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
             />
             <button 
                 onClick={() => wavInputRef.current?.click()}
-                disabled={isRecordingMic || micCountdown !== null}
-                className="flex items-center space-x-2 px-4 py-2 rounded-lg font-bold bg-indigo-900/50 hover:bg-indigo-800 transition-all text-white text-xs disabled:opacity-50 border border-indigo-500/30"
+                disabled={isRecordingMic || micCountdown !== null || isRecordingKey}
+                className="flex items-center space-x-1.5 px-3 py-2 rounded-lg font-bold bg-gray-900 hover:bg-gray-800 transition-all text-gray-400 text-[10px] disabled:opacity-50 border border-gray-800"
             >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0l-4 4m4-4v12" /></svg>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0l-4 4m4-4v12" /></svg>
                 <span>WAV IMP</span>
             </button>
           </div>
@@ -617,8 +745,9 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
           <div className="relative" style={{ width: `${totalCells * 40 + 80}px`, height: `${scale.length * 24}px` }}>
             <div className="sticky left-0 top-0 z-20 w-20 bg-gray-950/95 border-r border-gray-800 h-full flex flex-col backdrop-blur-sm">
               {scale.map((s) => (
-                <div key={s.index} className={`h-[24px] flex items-center px-3 text-[9px] font-mono border-b border-gray-900/50 ${s.name.includes('#') ? 'bg-gray-900/40 text-gray-600' : 'text-gray-400'}`}>
-                  {s.name}{s.octave}
+                <div key={s.index} className={`h-[24px] flex items-center justify-between px-3 text-[9px] font-mono border-b border-gray-900/50 ${s.name.includes('#') ? 'bg-gray-900/40 text-gray-600' : 'text-gray-400'}`}>
+                  <span className="truncate mr-1">{s.name}{s.octave}</span>
+                  {REVERSE_KEY_MAP[s.index] && <span className="text-blue-600 font-bold bg-blue-500/10 px-0.5 rounded border border-blue-500/20">{REVERSE_KEY_MAP[s.index]}</span>}
                 </div>
               ))}
             </div>
