@@ -1,4 +1,5 @@
 export interface Note {
+  id: string; 
   freq: number;
   durationMs: number;
   startMs: number;

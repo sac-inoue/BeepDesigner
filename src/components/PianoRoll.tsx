@@ -72,14 +72,16 @@ interface PianoRollProps {
 const PianoRollGrid = React.memo(({ 
   scale, 
   totalCells, 
-  notes, 
-  handleMouseDown, 
+  notes,
+  selectedNoteIds,
+  handleMouseDown,
   handleMouseEnter 
 }: { 
   scale: NoteEntry[], 
   totalCells: number, 
   notes: Note[],
-  handleMouseDown: (colIndex: number, freq: number, isActive: boolean) => void,
+  selectedNoteIds: Set<string>,
+  handleMouseDown: (colIndex: number, freq: number, isActive: boolean, isShift: boolean) => void,
   handleMouseEnter: (colIndex: number, freq: number) => void
 }) => {
   return (
@@ -92,6 +94,7 @@ const PianoRollGrid = React.memo(({
           const startMs = colIndex * GRID_MS;
           const note = notes.find(n => Math.abs(n.startMs - startMs) < 0.1);
           const isActive = note && Math.abs(note.freq - s.freq) < 1;
+          const isSelected = note && selectedNoteIds.has(note.id);
 
           const isSecondBoundary = (colIndex + 1) % (1000 / GRID_MS) === 0;
           const isMidBoundary = (colIndex + 1) % (500 / GRID_MS) === 0;
@@ -106,10 +109,16 @@ const PianoRollGrid = React.memo(({
                 isQuarterBoundary ? 'border-r-gray-700' :
                 'border-r-gray-900/40'
               } ${s.name.includes('#') ? 'bg-gray-950/40' : 'bg-transparent'} hover:bg-blue-500/10`}
-              onMouseDown={(e) => { e.preventDefault(); handleMouseDown(colIndex, s.freq, !!isActive); }}
+              onMouseDown={(e) => { e.preventDefault(); handleMouseDown(colIndex, s.freq, !!isActive, e.shiftKey); }}
               onMouseEnter={() => handleMouseEnter(colIndex, s.freq)}
             >
-              {isActive && <div className="absolute inset-0 bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.6)] z-10 rounded-sm border border-blue-400/50" />}
+              {isActive && (
+                <div className={`absolute inset-0 z-10 rounded-sm border ${
+                    isSelected 
+                    ? 'bg-yellow-400 shadow-[0_0_20px_rgba(250,204,21,0.8)] border-white scale-105 z-20' 
+                    : 'bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.6)] border-blue-400/50'
+                }`} />
+              )}
             </div>
           );
         })
@@ -131,6 +140,13 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
   const [dragMode, setDragMode] = useState<'add' | 'remove' | null>(null);
 
   // Mic Recording State
+  const [toolMode, setToolMode] = useState<'pencil' | 'cursor'>('pencil');
+  const [selectedNoteIds, setSelectedNoteIds] = useState<Set<string>>(new Set());
+  const [dragStartPos, setDragStartPos] = useState<{ col: number, freq: number } | null>(null);
+  const [dragOriginNotes, setDragOriginNotes] = useState<Note[]>([]);
+  const [marqueeStart, setMarqueeStart] = useState<{ col: number, idx: number } | null>(null);
+  const [marqueeEnd, setMarqueeEnd] = useState<{ col: number, idx: number } | null>(null);
+
   const [isRecordingMic, setIsRecordingMic] = useState(false);
   const [isRecordingKey, setIsRecordingKey] = useState(false);
   const [isKeyPlaying, setIsKeyPlaying] = useState(false);
@@ -341,16 +357,118 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     osc.stop(now + duration);
   };
 
-  const handleMouseDown = (cellIndex: number, freq: number, hasNote: boolean) => {
-    setIsDragging(true);
-    const mode = hasNote ? 'remove' : 'add';
-    setDragMode(mode);
-    applyTool(cellIndex, freq, mode);
+  const moveSelectedNotes = (targetCol: number, targetFreq: number) => {
+    if (!dragStartPos || selectedNoteIds.size === 0) return;
+    
+    const deltaCol = targetCol - dragStartPos.col;
+    const findIndex = (f: number) => scale.findIndex(s => Math.abs(s.freq - f) < 1);
+    const originMainFreqIndex = findIndex(dragStartPos.freq);
+    const targetFreqIndex = findIndex(targetFreq);
+    const deltaFreqIndex = targetFreqIndex - originMainFreqIndex;
+
+    const movedNotesIds = new Set(selectedNoteIds);
+    const otherNotes = beep.notes.filter(n => !movedNotesIds.has(n.id));
+    const nextNotes = [...beep.notes];
+
+    const moves: { id: string, newStartMs: number, newFreq: number }[] = [];
+
+    for (const id of movedNotesIds) {
+      const origin = dragOriginNotes.find(n => n.id === id);
+      if (!origin) continue;
+
+      const originCol = Math.round(origin.startMs / GRID_MS);
+      const newCol = originCol + deltaCol;
+      const originIdx = findIndex(origin.freq);
+      const newIdx = originIdx + deltaFreqIndex;
+
+      if (newCol < 0 || newCol >= totalCells || newIdx < 0 || newIdx >= scale.length) return;
+
+      const newStartMs = newCol * GRID_MS;
+      const newFreq = scale[newIdx].freq;
+
+      // Conflict check: horizontal move restricted if target slot taken by non-selected note
+      const conflict = otherNotes.find(o => Math.abs(o.startMs - newStartMs) < 0.1);
+      if (conflict) return;
+
+      moves.push({ id, newStartMs, newFreq });
+    }
+
+    // Apply all moves
+    const updated = nextNotes.map(n => {
+      const m = moves.find(move => move.id === n.id);
+      if (m) {
+        return { ...n, startMs: m.newStartMs, freq: m.newFreq };
+      }
+      return n;
+    });
+
+    onUpdate({ ...beep, notes: updated });
+  };
+
+  const handleMouseDown = (cellIndex: number, freq: number, hasNote: boolean, isShift: boolean) => {
+    if (toolMode === 'pencil') {
+      setIsDragging(true);
+      const mode = hasNote ? 'remove' : 'add';
+      setDragMode(mode);
+      applyTool(cellIndex, freq, mode);
+    } else {
+      const startMs = cellIndex * GRID_MS;
+      const clickedNote = beep.notes.find(n => Math.abs(n.startMs - startMs) < 0.1 && Math.abs(n.freq - freq) < 1);
+      
+      if (clickedNote) {
+        setIsDragging(true);
+        setDragStartPos({ col: cellIndex, freq });
+        setDragOriginNotes([...beep.notes]);
+
+        if (isShift) {
+          const nextSelection = new Set(selectedNoteIds);
+          if (nextSelection.has(clickedNote.id)) nextSelection.delete(clickedNote.id);
+          else nextSelection.add(clickedNote.id);
+          setSelectedNoteIds(nextSelection);
+        } else {
+          if (!selectedNoteIds.has(clickedNote.id)) {
+            setSelectedNoteIds(new Set([clickedNote.id]));
+          }
+        }
+        playNote(clickedNote.freq, 0.1);
+      } else {
+        if (!isShift) {
+            setSelectedNoteIds(new Set());
+        }
+        // Start Marquee
+        const idx = scale.findIndex(s => Math.abs(s.freq - freq) < 1);
+        setMarqueeStart({ col: cellIndex, idx });
+        setMarqueeEnd({ col: cellIndex, idx });
+      }
+    }
   };
 
   const handleMouseEnter = (cellIndex: number, freq: number) => {
-    if (isDragging && dragMode) {
-      applyTool(cellIndex, freq, dragMode);
+    if (isDragging) {
+      if (toolMode === 'pencil' && dragMode) {
+        applyTool(cellIndex, freq, dragMode);
+      } else if (toolMode === 'cursor' && dragStartPos) {
+        moveSelectedNotes(cellIndex, freq);
+      }
+    } else if (marqueeStart) {
+        const idx = scale.findIndex(s => Math.abs(s.freq - freq) < 1);
+        setMarqueeEnd({ col: cellIndex, idx });
+        
+        // Dynamic selection
+        const startCol = Math.min(marqueeStart.col, cellIndex);
+        const endCol = Math.max(marqueeStart.col, cellIndex);
+        const startIdx = Math.min(marqueeStart.idx, idx);
+        const endIdx = Math.max(marqueeStart.idx, idx);
+
+        const newSelection = new Set<string>();
+        beep.notes.forEach(n => {
+            const nCol = Math.round(n.startMs / GRID_MS);
+            const nIdx = scale.findIndex(s => Math.abs(s.freq - n.freq) < 1);
+            if (nCol >= startCol && nCol <= endCol && nIdx >= startIdx && nIdx <= endIdx) {
+                newSelection.add(n.id);
+            }
+        });
+        setSelectedNoteIds(newSelection);
     }
   };
 
@@ -362,7 +480,7 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     if (mode === 'add') {
       if (existingNote && Math.abs(existingNote.freq - freq) < 1) return;
       newNotes = newNotes.filter(n => Math.abs(n.startMs - startMs) >= 0.1);
-      newNotes.push({ freq, durationMs: GRID_MS, startMs });
+      newNotes.push({ id: crypto.randomUUID(), freq, durationMs: GRID_MS, startMs });
       playNote(freq, 0.05);
     } else {
       if (existingNote && Math.abs(existingNote.freq - freq) < 1) {
@@ -389,6 +507,9 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     const handleGlobalMouseUp = () => {
       setIsDragging(false);
       setDragMode(null);
+      setDragStartPos(null);
+      setMarqueeStart(null);
+      setMarqueeEnd(null);
     };
     window.addEventListener('mouseup', handleGlobalMouseUp);
     return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
@@ -749,12 +870,12 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
         const nearest = scale.reduce((prev, curr) => 
             Math.abs(curr.freq - f) < Math.abs(prev.freq - f) ? curr : prev
         );
-
         newNotes.push({
-          freq: nearest.freq,
-          durationMs: GRID_MS,
-          startMs: i * GRID_MS
-        });
+              id: crypto.randomUUID(),
+              freq: nearest.freq,
+              durationMs: GRID_MS,
+              startMs: i * GRID_MS
+            });
       }
     });
 
@@ -872,6 +993,28 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0l-4 4m4-4v12" /></svg>
                 <span>WAV IMP</span>
             </button>
+          </div>
+        </div>
+
+        <div className="h-10 w-px bg-gray-800 mx-2" />
+
+        <div className="flex flex-col space-y-1">
+          <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest pl-1">Editor Tool</span>
+          <div className="flex bg-gray-900 p-0.5 rounded-lg border border-gray-800">
+             <button 
+               onClick={() => setToolMode('pencil')}
+               className={`p-1.5 lg:p-2 rounded-md transition-all ${toolMode === 'pencil' ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+               title="Pencil (Add/Remove)"
+             >
+               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+             </button>
+             <button 
+               onClick={() => setToolMode('cursor')}
+               className={`p-1.5 lg:p-2 rounded-md transition-all ${toolMode === 'cursor' ? 'bg-yellow-500 text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+               title="Selection / Move"
+             >
+               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5" /></svg>
+             </button>
           </div>
         </div>
 
@@ -999,6 +1142,7 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
               scale={scale}
               totalCells={totalCells}
               notes={beep.notes}
+              selectedNoteIds={selectedNoteIds}
               handleMouseDown={handleMouseDown}
               handleMouseEnter={handleMouseEnter}
             />
@@ -1007,6 +1151,18 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
               ref={cursorRef}
               className="absolute top-0 bottom-0 w-0.5 bg-yellow-400 shadow-[0_0_10px_#facc15] z-30 pointer-events-none hidden will-change-transform" 
             />
+
+            {marqueeStart && marqueeEnd && (
+                <div 
+                    className="absolute bg-blue-500/20 border border-blue-400 z-50 pointer-events-none"
+                    style={{
+                        left: `${Math.min(marqueeStart.col, marqueeEnd.col) * 24 + 80}px`,
+                        top: `${Math.min(marqueeStart.idx, marqueeEnd.idx) * 24}px`,
+                        width: `${(Math.abs(marqueeStart.col - marqueeEnd.col) + 1) * 24}px`,
+                        height: `${(Math.abs(marqueeStart.idx - marqueeEnd.idx) + 1) * 24}px`
+                    }}
+                />
+            )}
           </div>
         </div>
 

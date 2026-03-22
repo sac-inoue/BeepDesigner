@@ -14,6 +14,13 @@ const DEFAULT_PROJECT: Project = {
   beeps: [{ id: 'default', name: 'startup_sound', durationSec: 1, notes: [], lastUpdatedAt: Date.now() }] 
 };
 
+const migrateNotes = (beeps: Beep[]): Beep[] => {
+  return beeps.map(b => ({
+    ...b,
+    notes: b.notes.map(n => n.id ? n : { ...n, id: crypto.randomUUID() })
+  }));
+};
+
 const App: React.FC = () => {
   const [isLoaded, setIsLoaded] = useState(false);
   const [project, setProject] = useState<Project>(DEFAULT_PROJECT);
@@ -33,9 +40,10 @@ const App: React.FC = () => {
       try {
         const parsed = JSON.parse(legacyString);
         if (parsed && parsed.beeps && parsed.beeps.length > 0) {
-          setProject(parsed);
-          setCurrentBeepId(parsed.beeps[0].id);
-          setWorkingBeep(JSON.parse(JSON.stringify(parsed.beeps[0])));
+          const migrated = { ...parsed, beeps: migrateNotes(parsed.beeps) };
+          setProject(migrated);
+          setCurrentBeepId(migrated.beeps[0].id);
+          setWorkingBeep(JSON.parse(JSON.stringify(migrated.beeps[0])));
           setIsLoaded(true);
           localStorage.removeItem('ESP32_BEEP_PROJECT');
           localStorage.removeItem('beep_project');
@@ -49,13 +57,15 @@ const App: React.FC = () => {
     // Load from IndexedDB
     get<Project>(STORAGE_KEY).then(saved => {
       if (saved && saved.beeps && saved.beeps.length > 0) {
-        setProject(saved);
-        setCurrentBeepId(saved.beeps[0].id);
-        setWorkingBeep(JSON.parse(JSON.stringify(saved.beeps[0])));
+        const migrated = { ...saved, beeps: migrateNotes(saved.beeps) };
+        setProject(migrated);
+        setCurrentBeepId(migrated.beeps[0].id);
+        setWorkingBeep(JSON.parse(JSON.stringify(migrated.beeps[0])));
       } else {
-        setProject(DEFAULT_PROJECT);
-        setCurrentBeepId(DEFAULT_PROJECT.beeps[0].id);
-        setWorkingBeep(JSON.parse(JSON.stringify(DEFAULT_PROJECT.beeps[0])));
+        const migrated = { ...DEFAULT_PROJECT, beeps: migrateNotes(DEFAULT_PROJECT.beeps) };
+        setProject(migrated);
+        setCurrentBeepId(migrated.beeps[0].id);
+        setWorkingBeep(JSON.parse(JSON.stringify(migrated.beeps[0])));
       }
       setIsLoaded(true);
     });
@@ -218,6 +228,13 @@ const App: React.FC = () => {
     }
   };
 
+  const reorderBeeps = (startIndex: number, endIndex: number) => {
+    const nextBeeps = Array.from(project.beeps);
+    const [removed] = nextBeeps.splice(startIndex, 1);
+    nextBeeps.splice(endIndex, 0, removed);
+    setProject({ ...project, beeps: nextBeeps });
+  };
+
   const updateBeepName = (id: string, name: string) => {
     setProject(prev => ({
       ...prev,
@@ -306,6 +323,7 @@ const App: React.FC = () => {
             onDuplicateBeep={duplicateBeep}
             onUpdateName={updateBeepName}
             onDeleteBeep={deleteBeep}
+            onReorderBeeps={reorderBeeps}
           />
         </div>
 
