@@ -93,10 +93,19 @@ const PianoRollGrid = React.memo(({
           const note = notes.find(n => Math.abs(n.startMs - startMs) < 0.1);
           const isActive = note && Math.abs(note.freq - s.freq) < 1;
 
+          const isSecondBoundary = (colIndex + 1) % (1000 / GRID_MS) === 0;
+          const isMidBoundary = (colIndex + 1) % (500 / GRID_MS) === 0;
+          const isQuarterBoundary = (colIndex + 1) % (250 / GRID_MS) === 0;
+
           return (
             <div 
               key={`${s.index}-${colIndex}`}
-              className={`relative border-r border-b border-gray-900/40 cursor-crosshair ${s.name.includes('#') ? 'bg-gray-950/40' : 'bg-transparent'} hover:bg-blue-500/10`}
+              className={`relative border-b border-gray-900/40 border-r cursor-crosshair ${
+                isSecondBoundary ? 'border-r-blue-400' : 
+                isMidBoundary ? 'border-r-gray-500' :
+                isQuarterBoundary ? 'border-r-gray-700' :
+                'border-r-gray-900/40'
+              } ${s.name.includes('#') ? 'bg-gray-950/40' : 'bg-transparent'} hover:bg-blue-500/10`}
               onMouseDown={(e) => { e.preventDefault(); handleMouseDown(colIndex, s.freq, !!isActive); }}
               onMouseEnter={() => handleMouseEnter(colIndex, s.freq)}
             >
