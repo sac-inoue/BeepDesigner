@@ -156,6 +156,11 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
     };
   }, [isKeyPlaying, isRecordingKey, scale]);
 
+  const currentKeyFreqRef = useRef<number>(0);
+  useEffect(() => {
+    currentKeyFreqRef.current = currentFreqFromKeys;
+  }, [currentFreqFromKeys]);
+
   const totalCells = (beep.durationSec * 1000) / GRID_MS;
 
   const playNote = (freq: number, duration: number = 0.1) => {
@@ -443,7 +448,7 @@ const PianoRoll: React.FC<PianoRollProps> = ({ beep, onUpdate, onToggleSidebar, 
 
     let step = 0;
     micIntervalRef.current = window.setInterval(() => {
-      recordedFrequenciesRef.current.push(currentFreqFromKeys);
+      recordedFrequenciesRef.current.push(currentKeyFreqRef.current);
       
       step++;
       setMicProgress((step / totalCells) * 100);
